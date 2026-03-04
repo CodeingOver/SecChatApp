@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SecChatApp – Secure Chat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Login Screen -->
+  <div id="login-screen" class="screen">
+    <div class="login-box">
+      <h1>🔒 SecChatApp</h1>
+      <p>End-to-End Encrypted Chat</p>
+      <input type="text" id="username-input" placeholder="Enter your username" maxlength="20" autocomplete="off" />
+      <button id="join-btn">Join Chat</button>
+    </div>
+  </div>
+
+  <!-- Chat Screen -->
+  <div id="chat-screen" class="screen hidden">
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <h2>🔒 SecChatApp</h2>
+        <span id="my-username"></span>
+      </div>
+      <div id="user-list"></div>
+    </div>
+    <div id="chat-area">
+      <div id="chat-header">
+        <span id="chat-with">Select a user to chat</span>
+        <span id="encryption-badge" class="badge hidden">🔐 E2E Encrypted</span>
+      </div>
+      <div id="messages"></div>
+      <div id="message-input-area" class="hidden">
+        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" />
+        <button id="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="crypto.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

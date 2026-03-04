@@ -1,0 +1,29 @@
+{
+  "name": "secchatapp",
+  "version": "1.0.0",
+  "description": "Secure Chat Application with End-to-End Encryption using RSA and Digital Signatures",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeingOver/SecChatApp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/CodeingOver/SecChatApp/issues"
+  },
+  "homepage": "https://github.com/CodeingOver/SecChatApp#readme",
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

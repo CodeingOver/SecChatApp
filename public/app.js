@@ -27,7 +27,7 @@
   let mySigningPublicKeyBase64 = '';
   let selectedUserId = null;
   let onlineUsers = []; // [{id, username, encryptionPublicKey, signingPublicKey}]
-  // Chat history: { odtherUserId: [{from, text, verified, timestamp}] }
+  // Chat history: { otherUserId: [{from, text, verified, timestamp}] }
   const chatHistory = {};
 
   // =========== Login ===========

@@ -7,35 +7,114 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Login Screen -->
-  <div id="login-screen" class="screen">
-    <div class="login-box">
-      <h1>🔒 SecChatApp</h1>
-      <p>End-to-End Encrypted Chat</p>
-      <input type="text" id="username-input" placeholder="Enter your username" maxlength="20" autocomplete="off" />
-      <button id="join-btn">Join Chat</button>
+
+  <!-- Auth Screen -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-container">
+      <div class="auth-logo">
+        <div class="logo-icon">💬</div>
+        <h1>SecChatApp</h1>
+        <p>End-to-End Encrypted Messaging</p>
+      </div>
+
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="login">Sign In</button>
+        <button class="auth-tab" data-tab="register">Create Account</button>
+      </div>
+
+      <!-- Login Form -->
+      <div id="login-form" class="auth-form">
+        <div class="form-group">
+          <input type="text" id="login-username" placeholder="Username" maxlength="20" autocomplete="username" />
+        </div>
+        <div class="form-group password-group">
+          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" />
+          <button class="toggle-password" type="button" data-target="login-password">👁</button>
+        </div>
+        <div id="login-error" class="form-error hidden"></div>
+        <button id="login-btn" class="btn-primary">Sign In</button>
+      </div>
+
+      <!-- Register Form -->
+      <div id="register-form" class="auth-form hidden">
+        <div class="form-group">
+          <input type="text" id="reg-username" placeholder="Username (3–20 characters)" maxlength="20" autocomplete="username" />
+        </div>
+        <div class="form-group password-group">
+          <input type="password" id="reg-password" placeholder="Password (min 6 characters)" autocomplete="new-password" />
+          <button class="toggle-password" type="button" data-target="reg-password">👁</button>
+        </div>
+        <div class="form-group password-group">
+          <input type="password" id="reg-confirm" placeholder="Confirm Password" autocomplete="new-password" />
+          <button class="toggle-password" type="button" data-target="reg-confirm">👁</button>
+        </div>
+        <div id="reg-error" class="form-error hidden"></div>
+        <button id="reg-btn" class="btn-primary">Create Account</button>
+      </div>
+
+      <div class="auth-footer">
+        <span class="security-note">🔐 All messages are end-to-end encrypted</span>
+      </div>
     </div>
   </div>
 
   <!-- Chat Screen -->
   <div id="chat-screen" class="screen hidden">
+
+    <!-- Sidebar -->
     <div id="sidebar">
       <div id="sidebar-header">
-        <h2>🔒 SecChatApp</h2>
-        <span id="my-username"></span>
+        <div class="sidebar-logo">💬 SecChatApp</div>
+        <div class="header-actions">
+          <div class="my-avatar" id="my-avatar"></div>
+          <button id="logout-btn" title="Sign out">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+              <path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-search">
+        <input type="text" id="search-input" placeholder="🔍  Search contacts" />
       </div>
       <div id="user-list"></div>
     </div>
+
+    <!-- Chat Area -->
     <div id="chat-area">
-      <div id="chat-header">
-        <span id="chat-with">Select a user to chat</span>
-        <span id="encryption-badge" class="badge hidden">🔐 E2E Encrypted</span>
+
+      <!-- Empty state -->
+      <div id="chat-empty" class="chat-empty">
+        <div class="empty-icon">💬</div>
+        <h2>Your Messages</h2>
+        <p>Select a contact to start an encrypted conversation.</p>
+        <span class="security-label">🔐 All messages are E2E encrypted</span>
       </div>
-      <div id="messages"></div>
-      <div id="message-input-area" class="hidden">
-        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" />
-        <button id="send-btn">Send</button>
+
+      <!-- Active chat -->
+      <div id="chat-active" class="hidden">
+        <div id="chat-header">
+          <div class="chat-header-user">
+            <div class="avatar" id="chat-avatar"></div>
+            <div class="chat-header-info">
+              <div id="chat-with" class="chat-username"></div>
+              <div class="chat-status">🔐 End-to-end encrypted</div>
+            </div>
+          </div>
+          <span id="encryption-badge" class="badge">E2E Encrypted</span>
+        </div>
+        <div id="messages"></div>
+        <div id="message-input-area">
+          <button class="input-action-btn" type="button" title="Emoji">😊</button>
+          <input type="text" id="message-input" placeholder="Aa" autocomplete="off" />
+          <button id="send-btn" title="Send">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
+        </div>
       </div>
+
     </div>
   </div>
 

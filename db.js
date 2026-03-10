@@ -40,8 +40,27 @@ async function getUserByUsername(username) {
   const result = await db
     .request()
     .input('username', sql.NVarChar(20), username)
-    .query('SELECT Username, PasswordHash, Salt FROM Users WHERE Username = @username');
+    .query('SELECT Username, PasswordHash, Salt, PublicKey FROM Users WHERE Username = @username');
   return result.recordset[0] || null;
+}
+
+async function updatePublicKey(username, publicKey) {
+  const db = await getPool();
+  await db
+    .request()
+    .input('username', sql.NVarChar(20), username)
+    .input('publicKey', sql.NVarChar(sql.MAX), publicKey)
+    .query('UPDATE Users SET PublicKey = @publicKey WHERE Username = @username');
+}
+
+async function getUserPublicKey(username) {
+  const db = await getPool();
+  const result = await db
+    .request()
+    .input('username', sql.NVarChar(20), username)
+    .query('SELECT PublicKey FROM Users WHERE Username = @username');
+  const row = result.recordset[0];
+  return row ? row.PublicKey : null;
 }
 
 // ============================================
@@ -78,17 +97,49 @@ async function deleteSession(token) {
 // Message operations
 // ============================================
 
-async function saveMessage(fromUsername, toUsername, encryptedMessage, signature) {
+async function saveMessage(fromUsername, toUsername, encryptedMessage, encryptedForSender, signature) {
   const db = await getPool();
   await db
     .request()
     .input('from', sql.NVarChar(20), fromUsername)
     .input('to', sql.NVarChar(20), toUsername)
     .input('msg', sql.NVarChar(sql.MAX), encryptedMessage)
+    .input('efs', sql.NVarChar(sql.MAX), encryptedForSender || null)
     .input('sig', sql.NVarChar(sql.MAX), signature || null)
     .query(
-      'INSERT INTO Messages (FromUsername, ToUsername, EncryptedMessage, Signature) VALUES (@from, @to, @msg, @sig)'
+      'INSERT INTO Messages (FromUsername, ToUsername, EncryptedMessage, EncryptedForSender, Signature) VALUES (@from, @to, @msg, @efs, @sig)'
     );
+}
+
+async function getMessages(user1, user2, limit = 50) {
+  const db = await getPool();
+  const result = await db
+    .request()
+    .input('u1', sql.NVarChar(20), user1)
+    .input('u2', sql.NVarChar(20), user2)
+    .input('limit', sql.Int, limit)
+    .query(
+      `SELECT TOP(@limit) FromUsername, ToUsername, EncryptedMessage, EncryptedForSender, Signature, SentAt
+       FROM Messages
+       WHERE (FromUsername = @u1 AND ToUsername = @u2) OR (FromUsername = @u2 AND ToUsername = @u1)
+       ORDER BY SentAt DESC`
+    );
+  return result.recordset.reverse();
+}
+
+// Get distinct users that the given user has ever exchanged messages with
+async function getConversationPartners(username) {
+  const db = await getPool();
+  const result = await db
+    .request()
+    .input('me', sql.NVarChar(20), username)
+    .query(
+      `SELECT DISTINCT
+         CASE WHEN FromUsername = @me THEN ToUsername ELSE FromUsername END AS PartnerUsername
+       FROM Messages
+       WHERE FromUsername = @me OR ToUsername = @me`
+    );
+  return result.recordset.map((r) => r.PartnerUsername);
 }
 
 // ============================================
@@ -266,10 +317,14 @@ module.exports = {
   getPool,
   createUser,
   getUserByUsername,
+  updatePublicKey,
+  getUserPublicKey,
   createSession,
   getSessionByToken,
   deleteSession,
   saveMessage,
+  getMessages,
+  getConversationPartners,
   searchUsers,
   sendFriendRequest,
   getPendingRequests,

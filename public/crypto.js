@@ -131,12 +131,42 @@ const CryptoModule = (() => {
     return bytes.buffer;
   }
 
+  // Export private key to JWK (for localStorage persistence)
+  async function exportPrivateKey(key) {
+    return await crypto.subtle.exportKey('jwk', key);
+  }
+
+  // Import private encryption key from JWK
+  async function importEncryptionPrivateKey(jwk) {
+    return await crypto.subtle.importKey('jwk', jwk, RSA_ALGORITHM, true, ['decrypt']);
+  }
+
+  // Import public encryption key from JWK
+  async function importEncryptionPublicKeyJwk(jwk) {
+    return await crypto.subtle.importKey('jwk', jwk, RSA_ALGORITHM, true, ['encrypt']);
+  }
+
+  // Import private signing key from JWK
+  async function importSigningPrivateKey(jwk) {
+    return await crypto.subtle.importKey('jwk', jwk, SIGN_ALGORITHM, true, ['sign']);
+  }
+
+  // Import public signing key from JWK
+  async function importSigningPublicKeyJwk(jwk) {
+    return await crypto.subtle.importKey('jwk', jwk, SIGN_ALGORITHM, true, ['verify']);
+  }
+
   return {
     generateEncryptionKeyPair,
     generateSigningKeyPair,
     exportPublicKey,
+    exportPrivateKey,
     importEncryptionPublicKey,
+    importEncryptionPublicKeyJwk,
+    importEncryptionPrivateKey,
     importVerificationPublicKey,
+    importSigningPrivateKey,
+    importSigningPublicKeyJwk,
     encryptMessage,
     decryptMessage,
     signMessage,

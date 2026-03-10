@@ -26,9 +26,19 @@ BEGIN
         Username NVARCHAR(20) NOT NULL UNIQUE,
         PasswordHash NVARCHAR(128) NOT NULL,
         Salt NVARCHAR(32) NOT NULL,
+        PublicKey NVARCHAR(MAX) NULL,
         CreatedAt DATETIME2 DEFAULT GETDATE()
     );
     CREATE UNIQUE INDEX IX_Users_Username ON Users(Username);
+END
+GO
+
+-- Add PublicKey column if table already exists without it
+IF NOT EXISTS (SELECT *
+FROM sys.columns
+WHERE object_id = OBJECT_ID('Users') AND name = 'PublicKey')
+BEGIN
+    ALTER TABLE Users ADD PublicKey NVARCHAR(MAX) NULL;
 END
 GO
 

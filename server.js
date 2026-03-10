@@ -27,6 +27,15 @@ function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+// GET /api/me  (verify stored session token – used for auto-login after F5)
+app.get('/api/me', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  res.json({ username: session.Username });
+});
+
 // POST /api/register
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
@@ -90,6 +99,30 @@ io.use(async (socket, next) => {
 
 // =========== REST API: Search & Friends ===========
 
+// GET /api/conversations  (all users you've chatted with, including strangers)
+app.get('/api/conversations', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const partners = await db.getConversationPartners(session.Username);
+  const result = [];
+  for (const partnerUsername of partners) {
+    const onlineEntry = [...connectedUsers.entries()].find(([, v]) => v.username === partnerUsername);
+    let publicKey = onlineEntry ? onlineEntry[1].publicKey : null;
+    if (!publicKey) publicKey = await db.getUserPublicKey(partnerUsername);
+    const friendshipStatus = await db.getFriendshipStatus(session.Username, partnerUsername);
+    result.push({
+      username: partnerUsername,
+      online: !!onlineEntry,
+      socketId: onlineEntry ? onlineEntry[0] : null,
+      publicKey,
+      friendshipStatus,
+    });
+  }
+  res.json(result);
+});
+
 // GET /api/search?q=keyword  (search registered users)
 app.get('/api/search', async (req, res) => {
   const token = req.headers.authorization;
@@ -115,17 +148,34 @@ app.get('/api/friends', async (req, res) => {
   const session = await db.getSessionByToken(token);
   if (!session) return res.status(401).json({ error: 'Invalid token' });
   const friends = await db.getFriends(session.Username);
-  // For each friend, check if online
-  const result = friends.map((f) => {
+  // For each friend, check if online; if offline, use stored public key
+  const result = [];
+  for (const f of friends) {
     const onlineEntry = [...connectedUsers.entries()].find(([, v]) => v.username === f.FriendUsername);
-    return {
+    let publicKey = onlineEntry ? onlineEntry[1].publicKey : null;
+    if (!publicKey) {
+      publicKey = await db.getUserPublicKey(f.FriendUsername);
+    }
+    result.push({
       username: f.FriendUsername,
       online: !!onlineEntry,
       socketId: onlineEntry ? onlineEntry[0] : null,
-      publicKey: onlineEntry ? onlineEntry[1].publicKey : null,
-    };
-  });
+      publicKey,
+    });
+  }
   res.json(result);
+});
+
+// POST /api/update-public-key  (save public key to DB for offline messaging)
+app.post('/api/update-public-key', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const { publicKey } = req.body;
+  if (!publicKey) return res.status(400).json({ error: 'publicKey required' });
+  await db.updatePublicKey(session.Username, publicKey);
+  res.json({ status: 'ok' });
 });
 
 // GET /api/user-status/:username  (get any user's online status for direct chat)
@@ -138,11 +188,15 @@ app.get('/api/user-status/:username', async (req, res) => {
   const user = await db.getUserByUsername(target);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const onlineEntry = [...connectedUsers.entries()].find(([, v]) => v.username === target);
+  let publicKey = onlineEntry ? onlineEntry[1].publicKey : null;
+  if (!publicKey) {
+    publicKey = user.PublicKey || null;
+  }
   res.json({
     username: target,
     online: !!onlineEntry,
     socketId: onlineEntry ? onlineEntry[0] : null,
-    publicKey: onlineEntry ? onlineEntry[1].publicKey : null,
+    publicKey,
   });
 });
 
@@ -211,6 +265,42 @@ app.post('/api/friend-request/:id/reject', async (req, res) => {
   res.json(result);
 });
 
+// POST /api/send-message  (send message to offline users via REST)
+app.post('/api/send-message', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const { toUsername, encryptedMessage, encryptedForSender, signature } = req.body;
+  if (!toUsername || !encryptedMessage) return res.status(400).json({ error: 'Missing fields' });
+  const targetUser = await db.getUserByUsername(toUsername);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+  await db.saveMessage(session.Username, toUsername, encryptedMessage, encryptedForSender || null, signature || null);
+  res.json({ status: 'saved' });
+});
+
+// GET /api/messages/:username  (load chat history with a user)
+app.get('/api/messages/:username', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const targetUsername = req.params.username;
+  const messages = await db.getMessages(session.Username, targetUsername);
+  res.json(messages);
+});
+
+// GET /api/public-key/:username  (get stored public key for offline users)
+app.get('/api/public-key/:username', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const publicKey = await db.getUserPublicKey(req.params.username);
+  if (!publicKey) return res.status(404).json({ error: 'Public key not found' });
+  res.json({ publicKey });
+});
+
 io.on('connection', (socket) => {
   console.log(`[Server] New connection: ${socket.id} (${socket.username})`);
 
@@ -218,6 +308,10 @@ io.on('connection', (socket) => {
   socket.on('register', ({ publicKey }) => {
     connectedUsers.set(socket.id, { username: socket.username, publicKey });
     console.log(`[Server] User online: ${socket.username} (${socket.id})`);
+    // Save public key to database for offline messaging
+    db.updatePublicKey(socket.username, publicKey).catch((err) =>
+      console.error('[DB] Error saving public key:', err.message)
+    );
     // Notify friends that this user came online
     notifyFriendsOnlineStatus(socket.username);
   });
@@ -228,23 +322,26 @@ io.on('connection', (socket) => {
     const senderName = sender ? sender.username : 'Unknown';
     const recipient = connectedUsers.get(data.to);
     const recipientName = recipient ? recipient.username : null;
-    console.log(`[Server] Relaying encrypted message from ${senderName} to ${data.to}`);
+    console.log(`[Server] Relaying encrypted message from ${senderName} to ${recipientName || data.to}`);
     console.log('[Server] *** Server CANNOT read the message content (E2E encrypted) ***');
 
-    // Save encrypted message to database
-    if (recipientName) {
-      db.saveMessage(senderName, recipientName, data.encryptedMessage, data.signature).catch((err) =>
+    // Save encrypted message to database (use toUsername if recipient offline)
+    const targetName = recipientName || data.toUsername;
+    if (targetName) {
+      db.saveMessage(senderName, targetName, data.encryptedMessage, data.encryptedForSender || null, data.signature).catch((err) =>
         console.error('[DB] Error saving message:', err.message)
       );
     }
 
-    io.to(data.to).emit('private-message', {
-      from: socket.id,
-      fromUsername: senderName,
-      encryptedMessage: data.encryptedMessage,
-      signature: data.signature,
-      senderPublicKey: sender ? sender.publicKey : null,
-    });
+    if (recipient) {
+      io.to(data.to).emit('private-message', {
+        from: socket.id,
+        fromUsername: senderName,
+        encryptedMessage: data.encryptedMessage,
+        signature: data.signature,
+        senderPublicKey: sender ? sender.publicKey : null,
+      });
+    }
   });
 
   socket.on('disconnect', () => {

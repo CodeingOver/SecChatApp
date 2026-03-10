@@ -5,6 +5,82 @@
 
 (function () {
 
+  // =========== API Shield: Encrypt requests & decrypt responses ===========
+  // The cipherKey is fetched once from server; all API traffic is XOR-encrypted
+  // so the Network tab in DevTools only shows encrypted payloads.
+  let _cipherKey = null;
+
+  function _xorCipher(text, key) {
+    const keyBytes = [];
+    for (let k = 0; k < key.length; k++) keyBytes.push(key.charCodeAt(k));
+    // Encode text to UTF-8 bytes
+    const textBytes = new TextEncoder().encode(text);
+    const out = new Uint8Array(textBytes.length);
+    for (let i = 0; i < textBytes.length; i++) {
+      out[i] = textBytes[i] ^ keyBytes[i % keyBytes.length];
+    }
+    // Convert to base64
+    let binary = '';
+    for (let i = 0; i < out.length; i++) binary += String.fromCharCode(out[i]);
+    return btoa(binary);
+  }
+
+  function _xorDecipher(b64, key) {
+    const keyBytes = [];
+    for (let k = 0; k < key.length; k++) keyBytes.push(key.charCodeAt(k));
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      out[i] = raw.charCodeAt(i) ^ keyBytes[i % keyBytes.length];
+    }
+    return new TextDecoder().decode(out);
+  }
+
+  // Fetch cipher key from server (called once before any API call)
+  async function _ensureCipherKey() {
+    if (_cipherKey) return;
+    const r = await fetch('/api/cipher-key');
+    _cipherKey = await r.text();
+  }
+
+  // secureFetch: drop-in replacement for fetch() that encrypts API traffic.
+  // - Request body is XOR-encrypted before sending → Network shows { _enc: "..." }
+  // - Response body is XOR-decrypted automatically → returns normal Response
+  async function secureFetch(url, options = {}) {
+    await _ensureCipherKey();
+    const opts = Object.assign({}, options);
+
+    // Encrypt request body if present
+    if (opts.body && typeof opts.body === 'string') {
+      opts.body = JSON.stringify({ _enc: _xorCipher(opts.body, _cipherKey) });
+    }
+
+    const response = await fetch(url, opts);
+
+    // Decrypt response body
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const envelope = await response.json();
+      if (envelope && envelope._enc) {
+        const plainJson = _xorDecipher(envelope._enc, _cipherKey);
+        const parsed = JSON.parse(plainJson);
+        // Return a synthetic Response with the original status
+        return new Response(JSON.stringify(parsed), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // If no _enc wrapper, return as-is (shouldn't happen normally)
+      return new Response(JSON.stringify(envelope), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return response;
+  }
+
   // =========== DOM elements ===========
   const authScreen = document.getElementById('auth-screen');
   const chatScreen = document.getElementById('chat-screen');
@@ -132,7 +208,7 @@
     loginBtn.textContent = 'Signing in…';
     loginErrorEl.classList.add('hidden');
     try {
-      const res = await fetch('/api/login', {
+      const res = await secureFetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -173,7 +249,7 @@
     regBtn.textContent = 'Creating account…';
     regErrorEl.classList.add('hidden');
     try {
-      const res = await fetch('/api/register', {
+      const res = await secureFetch('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -252,7 +328,7 @@
       encryption: myEncryptionPublicKeyBase64,
       signing: mySigningPublicKeyBase64,
     });
-    fetch('/api/update-public-key', {
+    secureFetch('/api/update-public-key', {
       method: 'POST',
       headers: apiHeaders(),
       body: JSON.stringify({ publicKey: myPublicKeyJson }),
@@ -317,7 +393,7 @@
   // =========== Load Friends ===========
   async function loadFriends() {
     try {
-      const res = await fetch('/api/friends', { headers: apiHeaders() });
+      const res = await secureFetch('/api/friends', { headers: apiHeaders() });
       if (!res.ok) return;
       friendsList = await res.json();
       renderFriendsList();
@@ -339,7 +415,7 @@
   // =========== Load Conversations (strangers we've chatted with) ===========
   async function loadConversations() {
     try {
-      const res = await fetch('/api/conversations', { headers: apiHeaders() });
+      const res = await secureFetch('/api/conversations', { headers: apiHeaders() });
       if (!res.ok) return;
       const all = await res.json();
       // Keep only non-friends (friends are already in friendsList)
@@ -363,7 +439,7 @@
   // =========== Load Pending Requests ===========
   async function loadPendingRequests() {
     try {
-      const res = await fetch('/api/friend-requests', { headers: apiHeaders() });
+      const res = await secureFetch('/api/friend-requests', { headers: apiHeaders() });
       if (!res.ok) return;
       pendingRequests = await res.json();
       updateFrBadge();
@@ -451,7 +527,7 @@
       return;
     }
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: apiHeaders() });
+      const res = await secureFetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: apiHeaders() });
       if (!res.ok) return;
       const results = await res.json();
       renderSearchResults(results);
@@ -532,7 +608,7 @@
     btn.disabled = true;
     btn.textContent = '...';
     try {
-      const res = await fetch('/api/friend-request', {
+      const res = await secureFetch('/api/friend-request', {
         method: 'POST',
         headers: apiHeaders(),
         body: JSON.stringify({ toUsername }),
@@ -695,7 +771,7 @@
 
   async function respondToRequest(requestId, action, el) {
     try {
-      const res = await fetch(`/api/friend-request/${requestId}/${action}`, {
+      const res = await secureFetch(`/api/friend-request/${requestId}/${action}`, {
         method: 'POST',
         headers: apiHeaders(),
       });
@@ -719,7 +795,7 @@
     }
     // Otherwise fetch user status from server
     try {
-      const res = await fetch(`/api/user-status/${encodeURIComponent(username)}`, { headers: apiHeaders() });
+      const res = await secureFetch(`/api/user-status/${encodeURIComponent(username)}`, { headers: apiHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       selectFriend(data);
@@ -813,7 +889,7 @@
   // =========== Load Chat History from Database ===========
   async function loadChatHistory(username) {
     try {
-      const res = await fetch(`/api/messages/${encodeURIComponent(username)}`, { headers: apiHeaders() });
+      const res = await secureFetch(`/api/messages/${encodeURIComponent(username)}`, { headers: apiHeaders() });
       if (!res.ok) return;
       const messages = await res.json();
       if (messages.length === 0) {
@@ -886,7 +962,7 @@
     let recipientPublicKeyStr = selectedUser.publicKey;
     if (!recipientPublicKeyStr) {
       try {
-        const res = await fetch(`/api/public-key/${encodeURIComponent(selectedUser.username)}`, { headers: apiHeaders() });
+        const res = await secureFetch(`/api/public-key/${encodeURIComponent(selectedUser.username)}`, { headers: apiHeaders() });
         if (res.ok) {
           const data = await res.json();
           recipientPublicKeyStr = data.publicKey;
@@ -919,7 +995,7 @@
         });
       } else {
         // Offline: send via REST API (saved to DB for later)
-        await fetch('/api/send-message', {
+        await secureFetch('/api/send-message', {
           method: 'POST',
           headers: apiHeaders(),
           body: JSON.stringify({
@@ -1049,7 +1125,7 @@
     const savedToken = localStorage.getItem('sca_token');
     if (!savedToken) return;
     try {
-      const res = await fetch('/api/me', { headers: { Authorization: savedToken } });
+      const res = await secureFetch('/api/me', { headers: { Authorization: savedToken } });
       if (!res.ok) {
         localStorage.removeItem('sca_token');
         return;

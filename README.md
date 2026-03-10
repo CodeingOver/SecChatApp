@@ -9,17 +9,21 @@ A real-time chat application with **End-to-End Encryption (E2E)** using RSA and 
 - **Client-Side Cryptography**: All cryptographic operations (key generation, encryption, decryption, signing, verification) are performed in the browser using the Web Crypto API — no private keys ever leave the client.
 - **Real-Time Communication**: Powered by Socket.io for instant message delivery.
 - **Visual Security Indicators**: UI shows encryption badges and verification status (✅ Verified / ⚠️ Unverified) for each message.
+- **DevTools Protection**: Blocks F12, Ctrl+Shift+I and other shortcuts, detects DevTools via window size / debugger timing / console traps, and shows a full-screen warning overlay when DevTools is detected.
+- **Source Code Protection**: JavaScript files are blocked from direct access (403). Scripts are loaded via an encrypted API endpoint and executed from Blob URLs — View Source only shows HTML, Sources tab shows `blob:` URLs instead of file names.
+- **API Traffic Encryption**: All REST API request/response payloads are XOR-encrypted with a per-session key. Network tab only shows `{ _enc: "..." }` instead of readable JSON.
+- **secureFetch()**: Drop-in fetch wrapper that transparently encrypts outgoing requests and decrypts incoming responses.
 
 ## How It Works
 
-| Step | Location | Action |
-|------|----------|--------|
-| 1 | **Sender (A)** | Writes message "Hello" |
-| 2 | **Sender (A)** | Signs "Hello" with Private Key(A) → **Digital Signature** |
-| 3 | **Sender (A)** | Encrypts "Hello" with Public Key(B) → **Ciphertext** |
-| 4 | **Server** | Relays Ciphertext + Signature (cannot read the content) |
-| 5 | **Receiver (B)** | Decrypts Ciphertext with Private Key(B) → "Hello" |
-| 6 | **Receiver (B)** | Verifies Signature with Public Key(A) → ✅ Authentic |
+| Step | Location         | Action                                                    |
+| ---- | ---------------- | --------------------------------------------------------- |
+| 1    | **Sender (A)**   | Writes message "Hello"                                    |
+| 2    | **Sender (A)**   | Signs "Hello" with Private Key(A) → **Digital Signature** |
+| 3    | **Sender (A)**   | Encrypts "Hello" with Public Key(B) → **Ciphertext**      |
+| 4    | **Server**       | Relays Ciphertext + Signature (cannot read the content)   |
+| 5    | **Receiver (B)** | Decrypts Ciphertext with Private Key(B) → "Hello"         |
+| 6    | **Receiver (B)** | Verifies Signature with Public Key(A) → ✅ Authentic      |
 
 ## Installation
 

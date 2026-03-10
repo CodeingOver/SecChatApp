@@ -234,7 +234,67 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="crypto.js"></script>
-    <script src="app.js"></script>
+    <!-- Scripts are loaded dynamically via encrypted channel (Blob URLs) -->
+    <!-- View Source / Save Page will NOT reveal app.js, crypto.js source code -->
+    <script>
+      (function () {
+        // XOR decipher (matches server's xorCipher)
+        function xorDecipher(b64, key) {
+          var raw = atob(b64);
+          var keyBytes = [];
+          for (var k = 0; k < key.length; k++) keyBytes.push(key.charCodeAt(k));
+          var out = [];
+          for (var i = 0; i < raw.length; i++) {
+            out.push(
+              String.fromCharCode(
+                raw.charCodeAt(i) ^ keyBytes[i % keyBytes.length],
+              ),
+            );
+          }
+          return decodeURIComponent(escape(out.join("")));
+        }
+
+        var nonce =
+          Date.now().toString(36) + Math.random().toString(36).slice(2);
+
+        fetch("/api/load-scripts?nonce=" + encodeURIComponent(nonce))
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data.scripts) return;
+            // Load scripts in order via Blob URLs
+            var chain = Promise.resolve();
+            data.scripts.forEach(function (s) {
+              chain = chain.then(function () {
+                return new Promise(function (resolve, reject) {
+                  try {
+                    var code = xorDecipher(s.content, nonce);
+                    var blob = new Blob([code], {
+                      type: "application/javascript",
+                    });
+                    var url = URL.createObjectURL(blob);
+                    var el = document.createElement("script");
+                    el.src = url;
+                    el.onload = function () {
+                      URL.revokeObjectURL(url);
+                      resolve();
+                    };
+                    el.onerror = function () {
+                      reject(new Error("Failed to load " + s.name));
+                    };
+                    document.body.appendChild(el);
+                  } catch (e) {
+                    reject(e);
+                  }
+                });
+              });
+            });
+          })
+          .catch(function (e) {
+            console.error("Script load error:", e);
+          });
+      })();
+    </script>
   </body>
 </html>

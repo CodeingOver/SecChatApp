@@ -12,8 +12,95 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// =========== Source Protection: XOR encrypt/decrypt helper ===========
+const API_CIPHER_KEY = crypto.randomBytes(32).toString('hex');  // per-process key
+
+function xorCipher(text, key) {
+  const keyBytes = Buffer.from(key, 'utf8');
+  const textBytes = Buffer.from(text, 'utf8');
+  const out = Buffer.alloc(textBytes.length);
+  for (let i = 0; i < textBytes.length; i++) {
+    out[i] = textBytes[i] ^ keyBytes[i % keyBytes.length];
+  }
+  return out.toString('base64');
+}
+
+function xorDecipher(b64, key) {
+  const keyBytes = Buffer.from(key, 'utf8');
+  const data = Buffer.from(b64, 'base64');
+  const out = Buffer.alloc(data.length);
+  for (let i = 0; i < data.length; i++) {
+    out[i] = data[i] ^ keyBytes[i % keyBytes.length];
+  }
+  return out.toString('utf8');
+}
+
+// =========== Block direct access to JS source files ===========
+const PROTECTED_SCRIPTS = ['app.js', 'crypto.js', 'devtools-guard.js'];
+
+app.use((req, res, next) => {
+  const filename = path.basename(req.path);
+  if (PROTECTED_SCRIPTS.includes(filename) && req.path.startsWith('/')) {
+    // Allow only the /api/load-scripts endpoint to serve scripts
+    return res.status(403).send('// Access Denied');
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
+
+// =========== Serve scripts via encrypted endpoint ===========
+app.get('/api/load-scripts', (req, res) => {
+  const nonce = req.query.nonce;
+  if (!nonce) return res.status(400).json({ error: 'nonce required' });
+  try {
+    const scripts = PROTECTED_SCRIPTS.map(name => {
+      const filePath = path.join(__dirname, 'public', name);
+      const content = require('fs').readFileSync(filePath, 'utf8');
+      return { name, content: xorCipher(content, nonce) };
+    });
+    res.json({ scripts, key: nonce });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load scripts' });
+  }
+});
+
+// =========== API Response Encryption Middleware ===========
+// Wraps all /api/* JSON responses in { _enc: <xor-encrypted-base64> }
+// so Network tab shows encrypted data instead of readable JSON.
+app.use('/api', (req, res, next) => {
+  // Skip the load-scripts and cipher-key endpoints
+  if (req.path === '/load-scripts' || req.path === '/cipher-key') return next();
+  const originalJson = res.json.bind(res);
+  res.json = (data) => {
+    const plain = JSON.stringify(data);
+    const encrypted = xorCipher(plain, API_CIPHER_KEY);
+    originalJson({ _enc: encrypted });
+  };
+  next();
+});
+
+// =========== API Request Decryption Middleware ===========
+// If request body contains { _enc: "..." }, decrypt it before processing.
+app.use('/api', (req, res, next) => {
+  if (req.body && req.body._enc && typeof req.body._enc === 'string') {
+    try {
+      const decrypted = xorDecipher(req.body._enc, API_CIPHER_KEY);
+      req.body = JSON.parse(decrypted);
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid encrypted payload' });
+    }
+  }
+  next();
+});
+
+// Expose the cipher key via a special endpoint (fetched once by the client)
+app.get('/api/cipher-key', (req, res) => {
+  // Return the key directly (transmitted once, then used for all calls)
+  // In production, this would use a key exchange protocol (e.g., Diffie-Hellman)
+  res.send(API_CIPHER_KEY);
+});
 
 // connectedUsers remains in-memory (transient socket state)
 const connectedUsers = new Map();

@@ -828,6 +828,294 @@ res.json({ token, username: trimmed });
 res.json({ error: "Auth required" });
 ```
 
+## 7.3. Bảo vệ mã nguồn – Chống truy cập DevTools (Source Code Protection)
+
+SecChatApp triển khai module **`devtools-guard.js`** để ngăn người dùng mở Developer Tools trên trình duyệt, qua đó bảo vệ mã nguồn JavaScript (chứa logic mã hóa) và các khóa mã hóa lưu trong localStorage.
+
+### 7.3.1. Các kỹ thuật chống DevTools
+
+| #   | Kỹ thuật                               | Mô tả                                                                                                      |
+| --- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 1   | **Chặn phím tắt**                      | Chặn F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C, Ctrl+U (View Source), Ctrl+S (Save Page)               |
+| 2   | **Chặn chuột phải**                    | Vô hiệu hóa context menu (`contextmenu` event) để ngăn "Inspect Element"                                   |
+| 3   | **Phát hiện qua kích thước cửa sổ**    | So sánh `outerWidth - innerWidth > 160` – khi DevTools mở docked, viewport bị thu nhỏ                      |
+| 4   | **Phát hiện qua `debugger` statement** | Đo thời gian thực thi `debugger;` – nếu > 100ms → DevTools đang mở với breakpoint                          |
+| 5   | **Phát hiện qua `console.log` trick**  | Định nghĩa getter trên object rồi `console.log()` – getter chỉ bị gọi khi DevTools hiển thị console output |
+| 6   | **Chặn kéo thả**                       | Vô hiệu hóa `dragstart` để ngăn kéo hình ảnh/text ra ngoài xem source                                      |
+
+### 7.3.2. Triển khai
+
+**Chặn phím tắt:**
+
+```javascript
+const BLOCKED_KEYS = [
+  { key: "F12" }, // F12
+  { ctrl: true, shift: true, key: "I" }, // Ctrl+Shift+I (Inspect)
+  { ctrl: true, shift: true, key: "J" }, // Ctrl+Shift+J (Console)
+  { ctrl: true, shift: true, key: "C" }, // Ctrl+Shift+C (Element picker)
+  { ctrl: true, key: "U" }, // Ctrl+U (View source)
+  { ctrl: true, key: "S" }, // Ctrl+S (Save page)
+];
+
+document.addEventListener(
+  "keydown",
+  function (e) {
+    for (const combo of BLOCKED_KEYS) {
+      // Kiểm tra tổ hợp Ctrl, Shift, Key
+      if (ctrlMatch && shiftMatch && keyMatch) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+    }
+  },
+  true,
+); // Capture phase – chặn trước khi event đến các handler khác
+```
+
+**Phát hiện DevTools bằng đo thời gian debugger:**
+
+```javascript
+function debuggerCheck() {
+  const start = performance.now();
+  debugger; // Nếu DevTools mở → dừng ở đây
+  const duration = performance.now() - start;
+  if (duration > 100) {
+    onDevToolsDetected(); // DevTools đang mở!
+  }
+}
+setInterval(debuggerCheck, 2000);
+```
+
+**Phát hiện DevTools bằng console.log getter trap:**
+
+```javascript
+const devtoolsDetector = {};
+Object.defineProperty(devtoolsDetector, "id", {
+  get: function () {
+    onDevToolsDetected(); // Getter chỉ bị gọi khi console đang render
+  },
+});
+setInterval(function () {
+  console.log("%c", devtoolsDetector);
+  console.clear();
+}, 3000);
+```
+
+### 7.3.3. Hành động khi phát hiện DevTools
+
+Khi DevTools được phát hiện, ứng dụng hiển thị **overlay cảnh báo toàn màn hình**:
+
+```
+┌──────────────────────────────────────┐
+│                                      │
+│              ⚠️                       │
+│    Developer Tools Detected          │
+│                                      │
+│  Việc mở Developer Tools bị hạn chế │
+│  để bảo vệ mã nguồn và khóa mã hóa │
+│  Vui lòng đóng DevTools để tiếp tục │
+│                                      │
+└──────────────────────────────────────┘
+```
+
+- Overlay **tự động biến mất** khi người dùng đóng DevTools
+- Ứng dụng kiểm tra mỗi 500ms xem DevTools đã đóng chưa
+
+### 7.3.4. Tại sao cần bảo vệ mã nguồn?
+
+| Mối đe dọa                        | Hậu quả nếu không bảo vệ                                  |
+| --------------------------------- | --------------------------------------------------------- |
+| Xem source code                   | Hiểu logic mã hóa, tìm lỗ hổng                            |
+| Truy cập localStorage qua Console | Đánh cắp RSA private key (JWK) → giải mã mọi tin nhắn     |
+| Sửa đổi runtime variables         | Thay đổi `myEncryptionKeyPair`, `authToken` → chiếm phiên |
+| Inject JavaScript                 | Chèn code đọc plaintext trước khi mã hóa                  |
+| Sử dụng Network tab               | Xem cấu trúc API, replay requests                         |
+
+> **Lưu ý:** Đây là biện pháp **ngăn chặn** (deterrent), không phải bảo vệ tuyệt đối. Người dùng có kiến thức sâu vẫn có thể vượt qua (ví dụ: dùng `--auto-open-devtools-for-tabs` flag). Tuy nhiên, nó tạo thêm một lớp bảo vệ trong chiến lược Defense-in-Depth.
+
+## 7.4. Bảo vệ mã nguồn nâng cao – Chống bên thứ 3 (Advanced Source Protection)
+
+Ngoài việc chặn DevTools, SecChatApp còn triển khai **3 lớp bảo vệ bổ sung** để ngăn người dùng lấy mã nguồn JavaScript và kiểm tra API qua Network tab, ngay cả khi sử dụng công cụ bên thứ 3 (curl, Postman, proxy…).
+
+### 7.4.1. Chặn truy cập trực tiếp file JavaScript (Server Middleware)
+
+Tất cả file JavaScript nghiệp vụ (`app.js`, `crypto.js`, `devtools-guard.js`) **không thể truy cập trực tiếp** qua URL:
+
+```
+GET /app.js         → 403 Forbidden ("// Access Denied")
+GET /crypto.js      → 403 Forbidden
+GET /devtools-guard.js → 403 Forbidden
+GET /style.css      → 200 OK (CSS vẫn truy cập được bình thường)
+```
+
+**Triển khai (server.js):**
+
+```javascript
+const PROTECTED_SCRIPTS = ["app.js", "crypto.js", "devtools-guard.js"];
+
+app.use((req, res, next) => {
+  const filename = path.basename(req.path);
+  if (PROTECTED_SCRIPTS.includes(filename)) {
+    return res.status(403).send("// Access Denied");
+  }
+  next();
+});
+```
+
+→ Ngay cả khi dùng `curl http://localhost:3000/app.js` hoặc gõ trực tiếp URL trên trình duyệt, người dùng chỉ nhận được `403`.
+
+### 7.4.2. Tải script mã hóa qua Blob URL (Encrypted Script Loading)
+
+Thay vì dùng `<script src="app.js">`, HTML chỉ chứa một **inline loader nhỏ** tải script qua API mã hóa:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Luồng tải script                                           │
+│                                                             │
+│  Browser ──► GET /api/load-scripts?nonce=abc123             │
+│          ◄── { scripts: [{name, content: "XOR encrypted"}]} │
+│                                                             │
+│  Client   ──► XOR giải mã bằng nonce                       │
+│           ──► Tạo Blob URL → blob:http://localhost:3000/... │
+│           ──► Chèn <script src="blob:..."> vào DOM          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Quy trình chi tiết:**
+
+1. HTML sinh một `nonce` ngẫu nhiên mỗi lần tải trang: `Date.now().toString(36) + Math.random().toString(36).slice(2)`
+2. Gọi `GET /api/load-scripts?nonce=xxx` → Server đọc file JS, XOR-encrypt nội dung bằng nonce
+3. Client XOR-decrypt lại bằng cùng nonce → khôi phục mã nguồn gốc
+4. Tạo `Blob` → `URL.createObjectURL()` → Chèn `<script>` với `src=blob:...`
+5. Scripts thực thi từ Blob URL → **Sources tab** hiển thị `blob:http://.../<uuid>` thay vì tên file
+
+**Kết quả:**
+
+| Phương pháp tấn công   | Kết quả                                                 |
+| ---------------------- | ------------------------------------------------------- |
+| View Source (Ctrl+U)   | Chỉ thấy HTML + inline loader, **không** thấy JS source |
+| Gõ URL trực tiếp       | 403 Forbidden                                           |
+| Sources tab (DevTools) | Hiển thị `blob:http://...<uuid>`, không phải tên file   |
+| Save Page As           | Chỉ lưu HTML, không lưu được Blob scripts               |
+| curl / wget            | Chỉ nhận HTML hoặc 403 cho file JS                      |
+
+### 7.4.3. Mã hóa lưu lượng API (API Traffic Encryption)
+
+Tất cả giao tiếp REST API giữa client và server được **mã hóa bằng XOR cipher** với khóa ngẫu nhiên sinh mỗi lần server khởi động:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Luồng API Request/Response                                      │
+│                                                                  │
+│  [1] Server khởi động:                                           │
+│      API_CIPHER_KEY = crypto.randomBytes(32).toString('hex')     │
+│                                                                  │
+│  [2] Client tải key một lần:                                     │
+│      GET /api/cipher-key → "a1b2c3d4..."                         │
+│                                                                  │
+│  [3] Mỗi API call:                                               │
+│      Client: { _enc: XOR(requestBody, key) }  ──► Server         │
+│      Server: giải mã → xử lý → { _enc: XOR(response, key) }     │
+│      Client: giải mã _enc → JSON gốc                            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Server-side (Middleware pattern):**
+
+```javascript
+// Response Encryption: override res.json()
+app.use("/api", (req, res, next) => {
+  const originalJson = res.json.bind(res);
+  res.json = (data) => {
+    const plain = JSON.stringify(data);
+    const encrypted = xorCipher(plain, API_CIPHER_KEY);
+    originalJson({ _enc: encrypted });
+  };
+  next();
+});
+
+// Request Decryption: unwrap _enc before handlers see req.body
+app.use("/api", (req, res, next) => {
+  if (req.body && req.body._enc) {
+    const decrypted = xorDecipher(req.body._enc, API_CIPHER_KEY);
+    req.body = JSON.parse(decrypted);
+  }
+  next();
+});
+```
+
+**Client-side (`secureFetch` wrapper):**
+
+```javascript
+async function secureFetch(url, options = {}) {
+  await _ensureCipherKey(); // Lấy key từ /api/cipher-key (một lần)
+  // Mã hóa request body
+  if (opts.body)
+    opts.body = JSON.stringify({ _enc: _xorCipher(opts.body, key) });
+  const response = await fetch(url, opts);
+  // Giải mã response
+  const envelope = await response.json();
+  const plain = _xorDecipher(envelope._enc, key);
+  return new Response(plain, { status: response.status });
+}
+```
+
+**Kết quả khi kiểm tra Network tab:**
+
+```
+// Thay vì thấy:
+{ "username": "thinh", "friends": [...] }
+
+// Network tab chỉ hiển thị:
+{ "_enc": "SxUDFhMLQBNYR3kPFVFcWl0UF1xTXVxHGw==" }
+```
+
+### 7.4.4. XOR Cipher – Thuật toán mã hóa đối xứng
+
+SecChatApp sử dụng **XOR Cipher** cho việc mã hóa API traffic và script loading:
+
+```
+Encrypt: ciphertext[i] = plaintext[i] XOR key[i % keyLength]
+Decrypt: plaintext[i]  = ciphertext[i] XOR key[i % keyLength]
+```
+
+| Đặc điểm        | Giá trị                                           |
+| --------------- | ------------------------------------------------- |
+| Loại cipher     | Đối xứng (Symmetric), Stream cipher               |
+| Chiều dài khóa  | 64 hex chars = 256-bit (API key), dynamic (nonce) |
+| Encoding output | Base64                                            |
+| Tính chất       | XOR(XOR(P, K), K) = P → giải mã = mã hóa lại      |
+| Ưu điểm         | Nhanh, đơn giản, phù hợp cho obfuscation layer    |
+| Hạn chế         | Không an toàn bằng AES-GCM cho mục đích mật mã    |
+
+> **Lưu ý quan trọng:** XOR cipher ở đây đóng vai trò **lớp che giấu (obfuscation)** trong chiến lược Defense-in-Depth, không thay thế cho mã hóa E2E RSA-OAEP. Tin nhắn vẫn được RSA-OAEP mã hóa đầu cuối — XOR chỉ thêm một lớp bảo vệ cho API traffic.
+
+### 7.4.5. Tổng hợp các lớp bảo vệ mã nguồn
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              CÁC LỚP BẢO VỆ MÃ NGUỒN                   │
+│                                                         │
+│  Lớp 1: DevTools Guard (devtools-guard.js)              │
+│         → Chặn phím tắt, phát hiện DevTools             │
+│                                                         │
+│  Lớp 2: Server Middleware                               │
+│         → Chặn truy cập trực tiếp file .js (403)        │
+│                                                         │
+│  Lớp 3: Encrypted Script Loading                        │
+│         → Tải JS qua API mã hóa, thực thi từ Blob URL  │
+│                                                         │
+│  Lớp 4: API Traffic Encryption                          │
+│         → Mọi request/response API đều mã hóa XOR      │
+│         → Network tab chỉ hiển thị { _enc: "..." }      │
+│                                                         │
+│  Lớp 5: E2E Encryption (RSA-OAEP)                      │
+│         → Tin nhắn luôn mã hóa đầu cuối dù có vượt     │
+│            qua tất cả các lớp trên                      │
+└─────────────────────────────────────────────────────────┘
+```
+
 ---
 
 # 🔥 CHAPTER 8: FIREWALL, IDS/IPS
@@ -979,26 +1267,30 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 
 # 📊 TỔNG KẾT: Bảng ánh xạ tính năng bảo mật
 
-| #   | Tính năng bảo mật                          | Chapter liên quan       | File triển khai                                      |
-| --- | ------------------------------------------ | ----------------------- | ---------------------------------------------------- |
-| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)  | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()` |
-| 2   | Chữ ký số RSASSA-PKCS1-v1_5                | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`   |
-| 3   | Hash mật khẩu scrypt + salt                | Ch.2 Cryptography       | `server.js` → `hashPassword()`                       |
-| 4   | CSPRNG (randomBytes)                       | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation     |
-| 5   | SHA-256 (trong RSA-OAEP & RSASSA)          | Ch.2 Cryptography       | `crypto.js` → algorithm config                       |
-| 6   | Token-based session management             | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`  |
-| 7   | Socket.io middleware auth                  | Ch.3 Access Control     | `server.js` → `io.use()`                             |
-| 8   | `timingSafeEqual()` chống timing attack    | Ch.3 Access Control     | `server.js` → login flow                             |
-| 9   | Parameterized SQL queries                  | Ch.3, Ch.7              | `db.js` → mọi function                               |
-| 10  | Input validation (length, required)        | Ch.7 Software Security  | `server.js` → mọi endpoint                           |
-| 11  | XSS prevention (`textContent`)             | Ch.4 Malicious Code     | `app.js` → rendering                                 |
-| 12  | Zero external crypto dependencies          | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                    |
-| 13  | Named Pipes (local DB only)                | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                          |
-| 14  | EncryptedForSender (sender reads own msgs) | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                       |
-| 15  | Key persistence (JWK in localStorage)      | Ch.2 Key Management     | `app.js` → `startChat()`                             |
-| 16  | Zero-knowledge server architecture         | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                             |
-| 17  | Privacy by Design                          | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                    |
-| 18  | JavaScript memory safety                   | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                   |
+| #   | Tính năng bảo mật                           | Chapter liên quan       | File triển khai                                        |
+| --- | ------------------------------------------- | ----------------------- | ------------------------------------------------------ |
+| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)   | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()`   |
+| 2   | Chữ ký số RSASSA-PKCS1-v1_5                 | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`     |
+| 3   | Hash mật khẩu scrypt + salt                 | Ch.2 Cryptography       | `server.js` → `hashPassword()`                         |
+| 4   | CSPRNG (randomBytes)                        | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation       |
+| 5   | SHA-256 (trong RSA-OAEP & RSASSA)           | Ch.2 Cryptography       | `crypto.js` → algorithm config                         |
+| 6   | Token-based session management              | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`    |
+| 7   | Socket.io middleware auth                   | Ch.3 Access Control     | `server.js` → `io.use()`                               |
+| 8   | `timingSafeEqual()` chống timing attack     | Ch.3 Access Control     | `server.js` → login flow                               |
+| 9   | Parameterized SQL queries                   | Ch.3, Ch.7              | `db.js` → mọi function                                 |
+| 10  | Input validation (length, required)         | Ch.7 Software Security  | `server.js` → mọi endpoint                             |
+| 11  | XSS prevention (`textContent`)              | Ch.4 Malicious Code     | `app.js` → rendering                                   |
+| 12  | Zero external crypto dependencies           | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                      |
+| 13  | Named Pipes (local DB only)                 | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                            |
+| 14  | EncryptedForSender (sender reads own msgs)  | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                         |
+| 15  | Key persistence (JWK in localStorage)       | Ch.2 Key Management     | `app.js` → `startChat()`                               |
+| 16  | Zero-knowledge server architecture          | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                               |
+| 17  | Privacy by Design                           | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                      |
+| 18  | JavaScript memory safety                    | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                     |
+| 19  | Chống truy cập DevTools (Source Protection) | Ch.7 Software Security  | `devtools-guard.js` → chặn F12, detect DevTools        |
+| 20  | Chặn truy cập trực tiếp file JS (403)       | Ch.7 Software Security  | `server.js` → middleware PROTECTED_SCRIPTS             |
+| 21  | Encrypted Script Loading (Blob URL)         | Ch.7 Software Security  | `server.js` → `/api/load-scripts`, `index.html` loader |
+| 22  | API Traffic Encryption (XOR Cipher)         | Ch.7, Ch.2 Cryptography | `server.js` middleware + `app.js` → `secureFetch()`    |
 
 ---
 
@@ -1006,14 +1298,15 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 
 ```
 SecChatApp/
-├── server.js          # Express + Socket.io server, REST API, auth
+├── server.js          # Express + Socket.io server, REST API, auth, source protection
 ├── db.js              # SQL Server connection (Named Pipes), CRUD operations
 ├── package.json       # Dependencies: express, socket.io, mssql, msnodesqlv8
 ├── public/
-│   ├── index.html     # UI: Auth screen + Chat screen
-│   ├── app.js         # Main application logic, E2E encryption flow
-│   ├── crypto.js      # Cryptographic module (Web Crypto API)
-│   └── style.css      # Messenger-like dark theme UI
+│   ├── index.html         # UI + inline script loader (Blob URL bootstrap)
+│   ├── app.js             # Main app logic, secureFetch(), E2E encryption flow
+│   ├── crypto.js          # Cryptographic module (Web Crypto API)
+│   ├── devtools-guard.js  # Bảo vệ mã nguồn – chống mở DevTools
+│   └── style.css          # Messenger-like dark theme UI
 ```
 
 # 🗄️ DATABASE SCHEMA (SQL Server)

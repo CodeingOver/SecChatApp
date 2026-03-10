@@ -674,9 +674,11 @@ const CryptoModule = (() => {
 
 ## 4.2. Phòng chống Cross-Site Scripting (XSS)
 
-Mặc dù XSS không phải malware truyền thống, đây là vector tấn công nguy hiểm cho ứng dụng web:
+Mặc dù XSS không phải malware truyền thống, đây là vector tấn công nguy hiểm cho ứng dụng web.
 
-SecChatApp sử dụng DOM API thay vì `innerHTML` ở hầu hết các nơi:
+SecChatApp triển khai **phòng thủ XSS nhiều lớp (defense-in-depth)**:
+
+### Lớp 1: Client-side – DOM API an toàn
 
 ```javascript
 // Sử dụng textContent (safe) thay vì innerHTML (unsafe)
@@ -687,21 +689,112 @@ textEl.textContent = msg.text;
 
 `textContent` tự động escape HTML entities, ngăn chặn XSS qua nội dung tin nhắn.
 
+### Lớp 2: Server-side – Input Sanitization (HTML Entity Encoding)
+
+Ngay cả khi client không escape, server cũng **mã hóa các ký tự đặc biệt HTML** trước khi xử lý:
+
+```javascript
+// server.js – sanitizeHtml()
+function sanitizeHtml(str) {
+  if (typeof str !== "string") return str;
+  return str.replace(/[<>"'&]/g, (ch) => {
+    switch (ch) {
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      case "&":
+        return "&amp;";
+      default:
+        return ch;
+    }
+  });
+}
+```
+
+Áp dụng cho: search query, và mọi nơi hiển thị dữ liệu người dùng.
+
+### Lớp 3: Username Format Validation
+
+```javascript
+// Chỉ cho phép chữ cái, số, gạch dưới – loại bỏ hoàn toàn XSS qua username
+function isValidUsername(username) {
+  return /^[a-zA-Z0-9_]+$/.test(username);
+}
+```
+
+→ Username như `<script>alert(1)</script>` sẽ bị **từ chối ngay** (HTTP 400).
+
+### Lớp 4: HTTP Security Headers
+
+```
+X-Content-Type-Options: nosniff    → Ngăn MIME-type sniffing
+X-Frame-Options: DENY              → Chống Clickjacking
+Referrer-Policy: no-referrer        → Giảm lộ thông tin
+Permissions-Policy: camera=()...    → Chặn quyền không cần thiết
+```
+
+### Bảng tổng hợp phòng chống XSS:
+
+| Vector tấn công                  | Biện pháp                           | Vị trí          |
+| -------------------------------- | ----------------------------------- | --------------- |
+| `<script>` trong tin nhắn        | `textContent` thay vì `innerHTML`   | Client (app.js) |
+| `<script>` trong username        | Regex whitelist `[a-zA-Z0-9_]`      | Server + Client |
+| HTML entities trong search query | `sanitizeHtml()` escape `< > " ' &` | Server          |
+| MIME-type confusion              | `X-Content-Type-Options: nosniff`   | HTTP Header     |
+| Clickjacking (iframe-based XSS)  | `X-Frame-Options: DENY`             | HTTP Header     |
+
 ---
 
 # 😈 CHAPTER 5: DENIAL OF SERVICE (DoS)
 
 ## 5.1. Các biện pháp chống DoS trong SecChatApp
 
-### 5.1.1. Input Validation & Rate Limiting implicimt
+### 5.1.1. Rate Limiting – Chống Brute-force
+
+SecChatApp triển khai **rate limiting** theo IP trên các endpoint nhạy cảm:
+
+```javascript
+// Rate limiter: giới hạn số lần gọi API theo IP trong cửa sổ thời gian
+function rateLimit(windowMs, maxRequests) {
+  return (req, res, next) => {
+    const ip = req.ip;
+    const key = `${req.path}:${ip}`;
+    // Nếu vượt quá maxRequests trong windowMs → HTTP 429
+    if (record.count > maxRequests) {
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+    next();
+  };
+}
+
+// Áp dụng:
+app.post('/api/register', rateLimit(60000, 5),  ...);  // 5 lần/phút
+app.post('/api/login',    rateLimit(60000, 10), ...);  // 10 lần/phút
+```
+
+| Endpoint        | Giới hạn         | Mục đích                                 |
+| --------------- | ---------------- | ---------------------------------------- |
+| `/api/register` | 5 requests/phút  | Chống spam đăng ký, username enumeration |
+| `/api/login`    | 10 requests/phút | Chống brute-force password guessing      |
+
+### 5.1.2. Input Validation & Size Limits
 
 | Biện pháp             | Code                                                                        |
 | --------------------- | --------------------------------------------------------------------------- |
 | Username length limit | `trimmed.length < 3 \|\| trimmed.length > 20`                               |
+| Username format       | `/^[a-zA-Z0-9_]+$/` – chỉ chữ cái, số, gạch dưới                            |
 | Password minimum      | `password.length < 6`                                                       |
+| Message size limit    | `encryptedMessage.length > 51200` → HTTP 400 (tối đa 50KB)                  |
+| Search query limit    | `q.length > 50` → trả về [] (giới hạn 50 ký tự)                             |
+| Search sanitization   | `sanitizeHtml(q)` – escape HTML entities trước khi truy vấn DB              |
 | Search debounce       | `setTimeout(doSearch, 300)` — client-side throttle                          |
 | Message limit         | `getMessages(user1, user2, limit = 50)` — giới hạn 50 tin nhắn mỗi lần load |
-| Search result limit   | `LIKE @q` với input giới hạn 20 ký tự                                       |
+| Search result limit   | `LIKE @q` với input parameterized                                           |
 
 ### 5.1.2. Named Pipes thay vì TCP
 
@@ -767,15 +860,23 @@ function base64ToArrayBuffer(base64) {
 Mọi endpoint đều validate input trước khi xử lý:
 
 ```javascript
-// Registration
+// Registration – validation đa lớp
 if (!username || !password) return res.status(400).json({ error: "..." });
 if (trimmed.length < 3 || trimmed.length > 20)
   return res.status(400).json({ error: "..." });
+if (!/^[a-zA-Z0-9_]+$/.test(trimmed))
+  return res.status(400).json({ error: "..." });
 if (password.length < 6) return res.status(400).json({ error: "..." });
 
-// Send message
+// Send message – kiểm tra kích thước
 if (!toUsername || !encryptedMessage)
   return res.status(400).json({ error: "Missing fields" });
+if (encryptedMessage.length > 51200)
+  return res.status(400).json({ error: "Message too large" });
+
+// Search – sanitization + giới hạn
+const q = sanitizeHtml((req.query.q || "").trim());
+if (q.length > 50) return res.json([]);
 
 // Friend request
 if (!toUsername) return res.status(400).json({ error: "toUsername required" });
@@ -783,7 +884,33 @@ if (toUsername === session.Username)
   return res.status(400).json({ error: "Cannot add yourself" });
 ```
 
-### 7.1.2. Phòng thủ lập trình (Defensive Programming)
+### 7.1.2. HTTP Security Headers
+
+Server thiết lập các **HTTP security headers** cho mọi response:
+
+```javascript
+app.use((req, res, next) => {
+  res.setHeader("X-Frame-Options", "DENY"); // Chống Clickjacking
+  res.setHeader("X-Content-Type-Options", "nosniff"); // Chống MIME sniffing
+  res.setHeader("Referrer-Policy", "no-referrer"); // Giảm lộ thông tin
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
+  res.setHeader("Cache-Control", "no-store"); // Không cache dữ liệu nhạy cảm
+  next();
+});
+```
+
+| Header                    | Chức năng                                              |
+| ------------------------- | ------------------------------------------------------ |
+| `X-Frame-Options: DENY`   | Ngăn trang bị nhúng trong iframe → chống Clickjacking  |
+| `X-Content-Type-Options`  | Ngăn trình duyệt đoán MIME-type → chống mã độc         |
+| `Referrer-Policy`         | Không gửi URL gốc khi navigate → bảo vệ privacy        |
+| `Permissions-Policy`      | Chặn camera, microphone, GPS → giảm attack surface     |
+| `Cache-Control: no-store` | Không lưu response vào cache → bảo vệ dữ liệu nhạy cảm |
+
+### 7.1.3. Phòng thủ lập trình (Defensive Programming)
 
 | Kỹ thuật                         | Ví dụ trong SecChatApp                                      |
 | -------------------------------- | ----------------------------------------------------------- |
@@ -792,8 +919,10 @@ if (toUsername === session.Username)
 | **Parameterized queries**        | Tất cả SQL queries dùng `.input()`                          |
 | **Error handling**               | `try/catch` around mọi crypto operation và fetch call       |
 | **Principle of least privilege** | Socket chỉ nhận events đã đăng ký                           |
+| **Rate limiting**                | Giới hạn request trên login/register → chống brute-force    |
+| **Input sanitization**           | `sanitizeHtml()` escape HTML entities trên server-side      |
 
-### 7.1.3. Tách biệt Client và Server
+### 7.1.4. Tách biệt Client và Server
 
 ```
 Client (public/)          Server (server.js)
@@ -1267,30 +1396,35 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 
 # 📊 TỔNG KẾT: Bảng ánh xạ tính năng bảo mật
 
-| #   | Tính năng bảo mật                           | Chapter liên quan       | File triển khai                                        |
-| --- | ------------------------------------------- | ----------------------- | ------------------------------------------------------ |
-| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)   | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()`   |
-| 2   | Chữ ký số RSASSA-PKCS1-v1_5                 | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`     |
-| 3   | Hash mật khẩu scrypt + salt                 | Ch.2 Cryptography       | `server.js` → `hashPassword()`                         |
-| 4   | CSPRNG (randomBytes)                        | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation       |
-| 5   | SHA-256 (trong RSA-OAEP & RSASSA)           | Ch.2 Cryptography       | `crypto.js` → algorithm config                         |
-| 6   | Token-based session management              | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`    |
-| 7   | Socket.io middleware auth                   | Ch.3 Access Control     | `server.js` → `io.use()`                               |
-| 8   | `timingSafeEqual()` chống timing attack     | Ch.3 Access Control     | `server.js` → login flow                               |
-| 9   | Parameterized SQL queries                   | Ch.3, Ch.7              | `db.js` → mọi function                                 |
-| 10  | Input validation (length, required)         | Ch.7 Software Security  | `server.js` → mọi endpoint                             |
-| 11  | XSS prevention (`textContent`)              | Ch.4 Malicious Code     | `app.js` → rendering                                   |
-| 12  | Zero external crypto dependencies           | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                      |
-| 13  | Named Pipes (local DB only)                 | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                            |
-| 14  | EncryptedForSender (sender reads own msgs)  | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                         |
-| 15  | Key persistence (JWK in localStorage)       | Ch.2 Key Management     | `app.js` → `startChat()`                               |
-| 16  | Zero-knowledge server architecture          | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                               |
-| 17  | Privacy by Design                           | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                      |
-| 18  | JavaScript memory safety                    | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                     |
-| 19  | Chống truy cập DevTools (Source Protection) | Ch.7 Software Security  | `devtools-guard.js` → chặn F12, detect DevTools        |
-| 20  | Chặn truy cập trực tiếp file JS (403)       | Ch.7 Software Security  | `server.js` → middleware PROTECTED_SCRIPTS             |
-| 21  | Encrypted Script Loading (Blob URL)         | Ch.7 Software Security  | `server.js` → `/api/load-scripts`, `index.html` loader |
-| 22  | API Traffic Encryption (XOR Cipher)         | Ch.7, Ch.2 Cryptography | `server.js` middleware + `app.js` → `secureFetch()`    |
+| #   | Tính năng bảo mật                           | Chapter liên quan       | File triển khai                                         |
+| --- | ------------------------------------------- | ----------------------- | ------------------------------------------------------- |
+| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)   | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()`    |
+| 2   | Chữ ký số RSASSA-PKCS1-v1_5                 | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`      |
+| 3   | Hash mật khẩu scrypt + salt                 | Ch.2 Cryptography       | `server.js` → `hashPassword()`                          |
+| 4   | CSPRNG (randomBytes)                        | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation        |
+| 5   | SHA-256 (trong RSA-OAEP & RSASSA)           | Ch.2 Cryptography       | `crypto.js` → algorithm config                          |
+| 6   | Token-based session management              | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`     |
+| 7   | Socket.io middleware auth                   | Ch.3 Access Control     | `server.js` → `io.use()`                                |
+| 8   | `timingSafeEqual()` chống timing attack     | Ch.3 Access Control     | `server.js` → login flow                                |
+| 9   | Parameterized SQL queries                   | Ch.3, Ch.7              | `db.js` → mọi function                                  |
+| 10  | Input validation (length, required)         | Ch.7 Software Security  | `server.js` → mọi endpoint                              |
+| 11  | XSS prevention (`textContent`)              | Ch.4 Malicious Code     | `app.js` → rendering                                    |
+| 12  | Zero external crypto dependencies           | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                       |
+| 13  | Named Pipes (local DB only)                 | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                             |
+| 14  | EncryptedForSender (sender reads own msgs)  | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                          |
+| 15  | Key persistence (JWK in localStorage)       | Ch.2 Key Management     | `app.js` → `startChat()`                                |
+| 16  | Zero-knowledge server architecture          | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                                |
+| 17  | Privacy by Design                           | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                       |
+| 18  | JavaScript memory safety                    | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                      |
+| 19  | Chống truy cập DevTools (Source Protection) | Ch.7 Software Security  | `devtools-guard.js` → chặn F12, detect DevTools         |
+| 20  | Chặn truy cập trực tiếp file JS (403)       | Ch.7 Software Security  | `server.js` → middleware PROTECTED_SCRIPTS              |
+| 21  | Encrypted Script Loading (Blob URL)         | Ch.7 Software Security  | `server.js` → `/api/load-scripts`, `index.html` loader  |
+| 22  | API Traffic Encryption (XOR Cipher)         | Ch.7, Ch.2 Cryptography | `server.js` middleware + `app.js` → `secureFetch()`     |
+| 23  | HTTP Security Headers                       | Ch.4, Ch.7              | `server.js` → X-Frame-Options, nosniff, Referrer-Policy |
+| 24  | Rate Limiting (brute-force protection)      | Ch.5 DoS, Ch.3 Access   | `server.js` → `rateLimit()` on login/register           |
+| 25  | Server-side HTML Sanitization               | Ch.4 XSS, Ch.7          | `server.js` → `sanitizeHtml()` escape `<>"'&`           |
+| 26  | Username format whitelist                   | Ch.4 XSS, Ch.7          | `server.js` + `app.js` → `/^[a-zA-Z0-9_]+$/`            |
+| 27  | Message size limit (50KB)                   | Ch.5 DoS                | `server.js` → `encryptedMessage.length > 51200`         |
 
 ---
 

@@ -241,6 +241,10 @@
       showError(regErrorEl, 'Please fill in all fields.');
       return;
     }
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      showError(regErrorEl, 'Username can only contain letters, numbers, and underscores.');
+      return;
+    }
     if (password !== confirm) {
       showError(regErrorEl, 'Passwords do not match.');
       return;

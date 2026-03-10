@@ -12,6 +12,73 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// =========== HTTP Security Headers ===========
+app.use((req, res, next) => {
+  // Chống Clickjacking: không cho phép nhúng trang trong iframe
+  res.setHeader('X-Frame-Options', 'DENY');
+  // Chống MIME-type sniffing: ngăn trình duyệt đoán Content-Type
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  // Tắt Referrer khi chuyển trang giảm lộ thông tin
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // Chặn quyền camera, microphone, geolocation...
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // Cache-Control: không cache dữ liệu nhạy cảm
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+// =========== Input Sanitization Utility ===========
+// Loại bỏ tất cả HTML tags để chống XSS (defense-in-depth)
+function sanitizeHtml(str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(/[<>"'&]/g, (ch) => {
+    switch (ch) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      case "'": return '&#39;';
+      case '&': return '&amp;';
+      default: return ch;
+    }
+  });
+}
+
+// Kiểm tra định dạng username: chỉ cho phép chữ cái, số, gạch dưới
+function isValidUsername(username) {
+  return /^[a-zA-Z0-9_]+$/.test(username);
+}
+
+// =========== Rate Limiting ===========
+// Giới hạn số lần gọi API theo IP để chống brute-force
+const rateLimitStore = new Map();
+
+function rateLimit(windowMs, maxRequests) {
+  return (req, res, next) => {
+    const ip = req.ip;
+    const now = Date.now();
+    const key = `${req.route ? req.route.path : req.path}:${ip}`;
+    const record = rateLimitStore.get(key);
+    if (!record || now - record.windowStart > windowMs) {
+      rateLimitStore.set(key, { windowStart: now, count: 1 });
+      return next();
+    }
+    record.count++;
+    if (record.count > maxRequests) {
+      console.warn(`[Security] Rate limit exceeded for ${key}`);
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+    next();
+  };
+}
+
+// Dọn dẹp rateLimitStore định kỳ (mỗi 5 phút)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of rateLimitStore) {
+    if (now - record.windowStart > 300000) rateLimitStore.delete(key);
+  }
+}, 300000);
+
 // =========== Source Protection: XOR encrypt/decrypt helper ===========
 const API_CIPHER_KEY = crypto.randomBytes(32).toString('hex');  // per-process key
 
@@ -124,7 +191,7 @@ app.get('/api/me', async (req, res) => {
 });
 
 // POST /api/register
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', rateLimit(60000, 5), async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -132,6 +199,9 @@ app.post('/api/register', async (req, res) => {
   const trimmed = username.trim();
   if (trimmed.length < 3 || trimmed.length > 20) {
     return res.status(400).json({ error: 'Username must be 3–20 characters' });
+  }
+  if (!isValidUsername(trimmed)) {
+    return res.status(400).json({ error: 'Username can only contain letters, numbers, and underscores' });
   }
   if (password.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
@@ -150,7 +220,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // POST /api/login
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', rateLimit(60000, 10), async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -216,8 +286,9 @@ app.get('/api/search', async (req, res) => {
   if (!token) return res.status(401).json({ error: 'Auth required' });
   const session = await db.getSessionByToken(token);
   if (!session) return res.status(401).json({ error: 'Invalid token' });
-  const q = (req.query.q || '').trim();
+  const q = sanitizeHtml((req.query.q || '').trim());
   if (q.length < 1) return res.json([]);
+  if (q.length > 50) return res.json([]);  // Giới hạn độ dài truy vấn tìm kiếm
   const users = await db.searchUsers(q, session.Username);
   // Attach friendship status for each result
   const results = [];
@@ -360,6 +431,8 @@ app.post('/api/send-message', async (req, res) => {
   if (!session) return res.status(401).json({ error: 'Invalid token' });
   const { toUsername, encryptedMessage, encryptedForSender, signature } = req.body;
   if (!toUsername || !encryptedMessage) return res.status(400).json({ error: 'Missing fields' });
+  // Giới hạn kích thước tin nhắn mã hóa (tối đa 50KB)
+  if (encryptedMessage.length > 51200) return res.status(400).json({ error: 'Message too large' });
   const targetUser = await db.getUserByUsername(toUsername);
   if (!targetUser) return res.status(404).json({ error: 'User not found' });
   await db.saveMessage(session.Username, toUsername, encryptedMessage, encryptedForSender || null, signature || null);

@@ -69,5 +69,43 @@ BEGIN
 END
 GO
 
+-- FriendRequests table (loi moi ket ban)
+IF NOT EXISTS (SELECT *
+FROM sys.tables
+WHERE name = 'FriendRequests')
+BEGIN
+    CREATE TABLE FriendRequests
+    (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        FromUsername NVARCHAR(20) NOT NULL,
+        ToUsername NVARCHAR(20) NOT NULL,
+        Status NVARCHAR(10) NOT NULL DEFAULT 'pending',
+        -- pending, accepted, rejected
+        CreatedAt DATETIME2 DEFAULT GETDATE(),
+        CONSTRAINT FK_FR_From FOREIGN KEY (FromUsername) REFERENCES Users(Username),
+        CONSTRAINT FK_FR_To FOREIGN KEY (ToUsername) REFERENCES Users(Username),
+        CONSTRAINT UQ_FriendRequest UNIQUE (FromUsername, ToUsername)
+    );
+END
+GO
+
+-- Friends table (danh sach ban be)
+IF NOT EXISTS (SELECT *
+FROM sys.tables
+WHERE name = 'Friends')
+BEGIN
+    CREATE TABLE Friends
+    (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        Username1 NVARCHAR(20) NOT NULL,
+        Username2 NVARCHAR(20) NOT NULL,
+        CreatedAt DATETIME2 DEFAULT GETDATE(),
+        CONSTRAINT FK_Friends_U1 FOREIGN KEY (Username1) REFERENCES Users(Username),
+        CONSTRAINT FK_Friends_U2 FOREIGN KEY (Username2) REFERENCES Users(Username),
+        CONSTRAINT UQ_Friends UNIQUE (Username1, Username2)
+    );
+END
+GO
+
 PRINT 'SecChatDB database created successfully!';
 GO

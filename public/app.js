@@ -1,5 +1,6 @@
 /* ============================================
    SecChatApp – Main Application Logic
+   (Messenger-like: Friends, Search, Chat)
    ============================================ */
 
 (function () {
@@ -29,8 +30,6 @@
   // Chat UI
   const myAvatarEl = document.getElementById('my-avatar');
   const logoutBtn = document.getElementById('logout-btn');
-  const searchInput = document.getElementById('search-input');
-  const userListEl = document.getElementById('user-list');
   const chatEmptyEl = document.getElementById('chat-empty');
   const chatActiveEl = document.getElementById('chat-active');
   const chatAvatarEl = document.getElementById('chat-avatar');
@@ -39,17 +38,34 @@
   const messageInput = document.getElementById('message-input');
   const sendBtn = document.getElementById('send-btn');
 
+  // Sidebar tabs
+  const sidebarTabs = document.querySelectorAll('.sidebar-tab');
+  const tabChats = document.getElementById('tab-chats');
+  const tabSearch = document.getElementById('tab-search');
+  const friendsListEl = document.getElementById('friends-list');
+  const searchInput = document.getElementById('search-input');
+  const searchResultsEl = document.getElementById('search-results');
+
+  // Friend requests
+  const friendRequestsBtn = document.getElementById('friend-requests-btn');
+  const frBadge = document.getElementById('fr-badge');
+  const frPanel = document.getElementById('friend-requests-panel');
+  const frCloseBtn = document.getElementById('fr-close-btn');
+  const frListEl = document.getElementById('fr-list');
+
   // =========== State ===========
   let socket = null;
+  let authToken = '';
   let myUsername = '';
   let myEncryptionKeyPair = null;
   let mySigningKeyPair = null;
   let myEncryptionPublicKeyBase64 = '';
   let mySigningPublicKeyBase64 = '';
-  let selectedUserId = null;
-  let onlineUsers = [];
-  let searchQuery = '';
-  // chatHistory: { otherUserId: [{from, text, verified, timestamp, unread}] }
+  let selectedUser = null; // { username, socketId, publicKey, online }
+  let friendsList = []; // [{ username, online, socketId, publicKey }]
+  let pendingRequests = [];
+  let searchDebounce = null;
+  // chatHistory: { username: [{from, text, verified, timestamp, unread}] }
   const chatHistory = {};
 
   // =========== Avatar helpers ===========
@@ -179,8 +195,14 @@
     el.classList.remove('hidden');
   }
 
+  // =========== API helpers ===========
+  function apiHeaders() {
+    return { 'Content-Type': 'application/json', 'Authorization': authToken };
+  }
+
   // =========== Start Chat session ===========
   async function startChat(token, username) {
+    authToken = token;
     myUsername = username;
 
     // Generate RSA key pairs client-side
@@ -199,18 +221,35 @@
           signing: mySigningPublicKeyBase64,
         }),
       });
+      // Load friends and pending requests
+      loadFriends();
+      loadPendingRequests();
     });
 
     socket.on('connect_error', (err) => {
       console.error('Socket connection error:', err.message);
     });
 
-    socket.on('user-list', (users) => {
-      onlineUsers = users.filter((u) => u.id !== socket.id);
-      renderUserList();
+    // Keep user-list for backward compatibility (online tracking)
+    socket.on('user-list', () => {
+      loadFriends();
     });
 
     socket.on('private-message', handleIncomingMessage);
+
+    // Friend events
+    socket.on('friend-request-received', () => {
+      loadPendingRequests();
+    });
+
+    socket.on('friend-accepted', () => {
+      loadFriends();
+      loadPendingRequests();
+    });
+
+    socket.on('friend-status-changed', () => {
+      loadFriends();
+    });
 
     // Set my avatar in sidebar header
     applyAvatar(myAvatarEl, username);
@@ -219,8 +258,50 @@
     authScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
 
-    // Pre-fill username for next login
     localStorage.setItem('sca_username', username);
+  }
+
+  // =========== Load Friends ===========
+  async function loadFriends() {
+    try {
+      const res = await fetch('/api/friends', { headers: apiHeaders() });
+      if (!res.ok) return;
+      friendsList = await res.json();
+      renderFriendsList();
+      // Update selected user's online status
+      if (selectedUser) {
+        const updated = friendsList.find((f) => f.username === selectedUser.username);
+        if (updated) {
+          selectedUser.online = updated.online;
+          selectedUser.socketId = updated.socketId;
+          selectedUser.publicKey = updated.publicKey;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load friends:', err);
+    }
+  }
+
+  // =========== Load Pending Requests ===========
+  async function loadPendingRequests() {
+    try {
+      const res = await fetch('/api/friend-requests', { headers: apiHeaders() });
+      if (!res.ok) return;
+      pendingRequests = await res.json();
+      updateFrBadge();
+      renderFriendRequests();
+    } catch (err) {
+      console.error('Failed to load friend requests:', err);
+    }
+  }
+
+  function updateFrBadge() {
+    if (pendingRequests.length > 0) {
+      frBadge.textContent = pendingRequests.length;
+      frBadge.classList.remove('hidden');
+    } else {
+      frBadge.classList.add('hidden');
+    }
   }
 
   // =========== Logout ===========
@@ -231,17 +312,20 @@
       socket.disconnect();
       socket = null;
     }
+    authToken = '';
     myUsername = '';
     myEncryptionKeyPair = null;
     mySigningKeyPair = null;
-    selectedUserId = null;
-    onlineUsers = [];
+    selectedUser = null;
+    friendsList = [];
+    pendingRequests = [];
     Object.keys(chatHistory).forEach((k) => delete chatHistory[k]);
 
     chatScreen.classList.add('hidden');
     authScreen.classList.remove('hidden');
     chatEmptyEl.classList.remove('hidden');
     chatActiveEl.classList.add('hidden');
+    frPanel.classList.add('hidden');
     loginPasswordEl.value = '';
     regUsernameEl.value = '';
     regPasswordEl.value = '';
@@ -250,54 +334,198 @@
     regErrorEl.classList.add('hidden');
   }
 
-  // =========== Search ===========
-  searchInput.addEventListener('input', () => {
-    searchQuery = searchInput.value.toLowerCase().trim();
-    renderUserList();
+  // =========== Sidebar Tabs ===========
+  sidebarTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      sidebarTabs.forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      if (tab.dataset.stab === 'chats') {
+        tabChats.classList.remove('hidden');
+        tabSearch.classList.add('hidden');
+      } else {
+        tabChats.classList.add('hidden');
+        tabSearch.classList.remove('hidden');
+        searchInput.focus();
+      }
+    });
   });
 
-  // =========== User List ===========
-  function renderUserList() {
-    userListEl.innerHTML = '';
-    const filtered = onlineUsers.filter(
-      (u) => !searchQuery || u.username.toLowerCase().includes(searchQuery)
-    );
-    if (filtered.length === 0) {
-      userListEl.innerHTML =
-        '<div class="no-users">No contacts online.<br>Ask a friend to join!</div>';
+  // =========== Friend Requests Panel ===========
+  friendRequestsBtn.addEventListener('click', () => {
+    frPanel.classList.toggle('hidden');
+  });
+  frCloseBtn.addEventListener('click', () => {
+    frPanel.classList.add('hidden');
+  });
+
+  // =========== Search Users ===========
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(doSearch, 300);
+  });
+
+  async function doSearch() {
+    const q = searchInput.value.trim();
+    if (q.length < 1) {
+      searchResultsEl.innerHTML = '<div class="no-users">Type a username to search</div>';
       return;
     }
-    filtered.forEach((user) => {
-      const el = document.createElement('div');
-      el.className = 'user-item' + (user.id === selectedUserId ? ' active' : '');
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { headers: apiHeaders() });
+      if (!res.ok) return;
+      const results = await res.json();
+      renderSearchResults(results);
+    } catch (err) {
+      console.error('Search error:', err);
+    }
+  }
 
-      // Avatar
+  function renderSearchResults(results) {
+    searchResultsEl.innerHTML = '';
+    if (results.length === 0) {
+      searchResultsEl.innerHTML = '<div class="no-users">No users found</div>';
+      return;
+    }
+    results.forEach((user) => {
+      const el = document.createElement('div');
+      el.className = 'user-item search-result-item';
+
       const avatarEl = document.createElement('div');
       avatarEl.className = 'avatar';
       applyAvatar(avatarEl, user.username);
 
-      // Info block
+      const info = document.createElement('div');
+      info.className = 'user-item-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'user-item-name';
+      nameEl.textContent = user.username;
+      const subEl = document.createElement('div');
+      subEl.className = 'user-item-sub';
+
+      info.appendChild(nameEl);
+      info.appendChild(subEl);
+      el.appendChild(avatarEl);
+      el.appendChild(info);
+
+      // Always allow clicking to chat
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => openChatWithUser(user.username));
+
+      if (user.friendshipStatus === 'friends') {
+        subEl.textContent = '✓ Friends';
+        subEl.style.color = '#4caf50';
+      } else if (user.friendshipStatus === 'request_sent') {
+        subEl.textContent = '⏳ Request sent';
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn-small btn-sent';
+        addBtn.textContent = '⏳ Sent';
+        addBtn.disabled = true;
+        el.appendChild(addBtn);
+      } else if (user.friendshipStatus === 'request_received') {
+        subEl.textContent = '📩 Sent you a request';
+        subEl.style.color = '#0084ff';
+        const viewBtn = document.createElement('button');
+        viewBtn.className = 'btn-small btn-accept';
+        viewBtn.textContent = 'Accept';
+        viewBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          frPanel.classList.remove('hidden');
+        });
+        el.appendChild(viewBtn);
+      } else {
+        subEl.textContent = 'User';
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn-small btn-add-friend';
+        addBtn.textContent = '+ Add';
+        addBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendFriendRequest(user.username, addBtn);
+        });
+        el.appendChild(addBtn);
+      }
+
+      searchResultsEl.appendChild(el);
+    });
+  }
+
+  async function sendFriendRequest(toUsername, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch('/api/friend-request', {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({ toUsername }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        btn.textContent = data.error || 'Error';
+        return;
+      }
+      if (data.status === 'accepted') {
+        btn.textContent = '✓ Friends';
+        btn.className = 'btn-small btn-accepted';
+        loadFriends();
+      } else {
+        btn.textContent = '⏳ Sent';
+        btn.className = 'btn-small btn-sent';
+      }
+    } catch {
+      btn.textContent = 'Error';
+    }
+  }
+
+  // =========== Render Friends List ===========
+  function renderFriendsList() {
+    friendsListEl.innerHTML = '';
+    if (friendsList.length === 0) {
+      friendsListEl.innerHTML =
+        '<div class="no-users">No friends yet.<br>Use Search to find and add friends!</div>';
+      return;
+    }
+    // Sort: online first, then alphabetically
+    const sorted = [...friendsList].sort((a, b) => {
+      if (a.online !== b.online) return b.online ? 1 : -1;
+      return a.username.localeCompare(b.username);
+    });
+    sorted.forEach((friend) => {
+      const el = document.createElement('div');
+      el.className = 'user-item' + (selectedUser && selectedUser.username === friend.username ? ' active' : '');
+
+      const avatarEl = document.createElement('div');
+      avatarEl.className = 'avatar';
+      applyAvatar(avatarEl, friend.username);
+
+      // Online indicator
+      const statusDot = document.createElement('div');
+      statusDot.className = 'status-dot ' + (friend.online ? 'online' : 'offline');
+
+      const avatarWrap = document.createElement('div');
+      avatarWrap.className = 'avatar-wrap';
+      avatarWrap.appendChild(avatarEl);
+      avatarWrap.appendChild(statusDot);
+
       const info = document.createElement('div');
       info.className = 'user-item-info';
 
       const nameEl = document.createElement('div');
       nameEl.className = 'user-item-name';
-      nameEl.textContent = user.username;
+      nameEl.textContent = friend.username;
 
       const subEl = document.createElement('div');
       subEl.className = 'user-item-sub';
-      const history = chatHistory[user.id];
+      const history = chatHistory[friend.username];
       const lastMsg = history && history.length > 0 ? history[history.length - 1] : null;
       if (lastMsg) {
         const preview = lastMsg.from === 'me' ? `You: ${lastMsg.text}` : lastMsg.text;
         subEl.textContent = preview.length > 36 ? preview.slice(0, 36) + '…' : preview;
       } else {
-        subEl.textContent = '🔐 Encrypted';
+        subEl.textContent = friend.online ? '🟢 Online' : '⚫ Offline';
       }
 
       info.appendChild(nameEl);
       info.appendChild(subEl);
-      el.appendChild(avatarEl);
+      el.appendChild(avatarWrap);
       el.appendChild(info);
 
       // Unread badge
@@ -309,29 +537,117 @@
         el.appendChild(badge);
       }
 
-      el.addEventListener('click', () => selectUser(user.id));
-      userListEl.appendChild(el);
+      el.addEventListener('click', () => selectFriend(friend));
+      friendsListEl.appendChild(el);
     });
   }
 
-  function selectUser(userId) {
-    selectedUserId = userId;
-    const user = onlineUsers.find((u) => u.id === userId);
-    if (!user) return;
+  // =========== Render Friend Requests ===========
+  function renderFriendRequests() {
+    frListEl.innerHTML = '';
+    if (pendingRequests.length === 0) {
+      frListEl.innerHTML = '<div class="no-users">No pending requests</div>';
+      return;
+    }
+    pendingRequests.forEach((req) => {
+      const el = document.createElement('div');
+      el.className = 'fr-item';
 
-    chatWithEl.textContent = user.username;
-    applyAvatar(chatAvatarEl, user.username);
+      const avatarEl = document.createElement('div');
+      avatarEl.className = 'avatar avatar-sm';
+      applyAvatar(avatarEl, req.FromUsername);
+
+      const info = document.createElement('div');
+      info.className = 'fr-item-info';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'fr-item-name';
+      nameEl.textContent = req.FromUsername;
+      const timeEl = document.createElement('div');
+      timeEl.className = 'fr-item-time';
+      timeEl.textContent = new Date(req.CreatedAt).toLocaleDateString();
+      info.appendChild(nameEl);
+      info.appendChild(timeEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'fr-actions';
+
+      const acceptBtn = document.createElement('button');
+      acceptBtn.className = 'btn-small btn-accept';
+      acceptBtn.textContent = 'Accept';
+      acceptBtn.addEventListener('click', () => respondToRequest(req.Id, 'accept', el));
+
+      const rejectBtn = document.createElement('button');
+      rejectBtn.className = 'btn-small btn-reject';
+      rejectBtn.textContent = 'Reject';
+      rejectBtn.addEventListener('click', () => respondToRequest(req.Id, 'reject', el));
+
+      actions.appendChild(acceptBtn);
+      actions.appendChild(rejectBtn);
+
+      el.appendChild(avatarEl);
+      el.appendChild(info);
+      el.appendChild(actions);
+      frListEl.appendChild(el);
+    });
+  }
+
+  async function respondToRequest(requestId, action, el) {
+    try {
+      const res = await fetch(`/api/friend-request/${requestId}/${action}`, {
+        method: 'POST',
+        headers: apiHeaders(),
+      });
+      if (res.ok) {
+        el.remove();
+        loadPendingRequests();
+        if (action === 'accept') loadFriends();
+      }
+    } catch (err) {
+      console.error('Error responding to request:', err);
+    }
+  }
+
+  // =========== Open chat with any user (from search) ===========
+  async function openChatWithUser(username) {
+    // If already a friend, use friend data
+    const friend = friendsList.find((f) => f.username === username);
+    if (friend) {
+      selectFriend(friend);
+      return;
+    }
+    // Otherwise fetch user status from server
+    try {
+      const res = await fetch(`/api/user-status/${encodeURIComponent(username)}`, { headers: apiHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      selectFriend(data);
+    } catch (err) {
+      console.error('Failed to get user status:', err);
+    }
+  }
+
+  // =========== Select Friend to Chat ===========
+  function selectFriend(friend) {
+    selectedUser = {
+      username: friend.username,
+      socketId: friend.socketId,
+      publicKey: friend.publicKey,
+      online: friend.online,
+    };
+
+    chatWithEl.textContent = friend.username;
+    applyAvatar(chatAvatarEl, friend.username);
 
     // Mark messages as read
-    if (chatHistory[userId]) {
-      chatHistory[userId].forEach((m) => (m.unread = false));
+    if (chatHistory[friend.username]) {
+      chatHistory[friend.username].forEach((m) => (m.unread = false));
     }
 
     chatEmptyEl.classList.add('hidden');
     chatActiveEl.classList.remove('hidden');
     messageInput.focus();
     renderMessages();
-    renderUserList();
+    renderFriendsList();
   }
 
   // =========== Sending Messages ===========
@@ -340,23 +656,24 @@
 
   async function handleSend() {
     const text = messageInput.value.trim();
-    if (!text || !selectedUserId) return;
+    if (!text || !selectedUser) return;
 
-    const recipient = onlineUsers.find((u) => u.id === selectedUserId);
-    if (!recipient) return;
+    if (!selectedUser.online || !selectedUser.socketId || !selectedUser.publicKey) {
+      addSystemMessage('This user is offline. Messages can only be sent when both users are online.');
+      return;
+    }
 
     try {
-      const recipientKeys = JSON.parse(recipient.publicKey);
+      const recipientKeys = JSON.parse(selectedUser.publicKey);
       const recipientEncKey = await CryptoModule.importEncryptionPublicKey(recipientKeys.encryption);
 
-      // Sign then encrypt
       const signature = await CryptoModule.signMessage(mySigningKeyPair.privateKey, text);
       const encryptedMessage = await CryptoModule.encryptMessage(recipientEncKey, text);
 
-      socket.emit('private-message', { to: selectedUserId, encryptedMessage, signature });
+      socket.emit('private-message', { to: selectedUser.socketId, encryptedMessage, signature });
 
-      if (!chatHistory[selectedUserId]) chatHistory[selectedUserId] = [];
-      chatHistory[selectedUserId].push({
+      if (!chatHistory[selectedUser.username]) chatHistory[selectedUser.username] = [];
+      chatHistory[selectedUser.username].push({
         from: 'me',
         text,
         verified: true,
@@ -365,7 +682,7 @@
 
       messageInput.value = '';
       renderMessages();
-      renderUserList();
+      renderFriendsList();
     } catch (err) {
       console.error('Encryption error:', err);
       addSystemMessage('Failed to encrypt message. Please try again.');
@@ -375,51 +692,54 @@
   // =========== Receiving Messages ===========
   async function handleIncomingMessage(data) {
     try {
-      // Decrypt with own private key
       const plaintext = await CryptoModule.decryptMessage(
         myEncryptionKeyPair.privateKey,
         data.encryptedMessage
       );
 
-      // Verify signature with sender's public signing key
-      const sender = onlineUsers.find((u) => u.id === data.from);
+      // Verify signature (check friends first, then use sender's publicKey from message)
       let verified = false;
-      if (sender) {
-        const senderKeys = JSON.parse(sender.publicKey);
+      const senderFriend = friendsList.find((f) => f.socketId === data.from);
+      const pubKeyStr = (senderFriend && senderFriend.publicKey) || data.senderPublicKey;
+      if (pubKeyStr) {
+        const senderKeys = JSON.parse(pubKeyStr);
         const senderSignKey = await CryptoModule.importVerificationPublicKey(senderKeys.signing);
         verified = await CryptoModule.verifySignature(senderSignKey, plaintext, data.signature);
       }
 
-      if (!chatHistory[data.from]) chatHistory[data.from] = [];
-      chatHistory[data.from].push({
-        from: data.fromUsername,
+      const senderUsername = data.fromUsername;
+      if (!chatHistory[senderUsername]) chatHistory[senderUsername] = [];
+      chatHistory[senderUsername].push({
+        from: senderUsername,
         text: plaintext,
         verified,
         timestamp: Date.now(),
-        unread: data.from !== selectedUserId,
+        unread: !selectedUser || selectedUser.username !== senderUsername,
       });
 
-      if (data.from === selectedUserId) renderMessages();
-      renderUserList();
+      if (selectedUser && selectedUser.username === senderUsername) renderMessages();
+      renderFriendsList();
     } catch (err) {
       console.error('Decryption error:', err);
-      if (!chatHistory[data.from]) chatHistory[data.from] = [];
-      chatHistory[data.from].push({
-        from: data.fromUsername,
+      const senderUsername = data.fromUsername;
+      if (!chatHistory[senderUsername]) chatHistory[senderUsername] = [];
+      chatHistory[senderUsername].push({
+        from: senderUsername,
         text: '⚠️ Failed to decrypt message',
         verified: false,
         timestamp: Date.now(),
-        unread: data.from !== selectedUserId,
+        unread: !selectedUser || selectedUser.username !== senderUsername,
       });
-      if (data.from === selectedUserId) renderMessages();
-      renderUserList();
+      if (selectedUser && selectedUser.username === senderUsername) renderMessages();
+      renderFriendsList();
     }
   }
 
   // =========== Render Messages ===========
   function renderMessages() {
     messagesEl.innerHTML = '';
-    const history = chatHistory[selectedUserId] || [];
+    if (!selectedUser) return;
+    const history = chatHistory[selectedUser.username] || [];
     if (history.length === 0) {
       messagesEl.innerHTML = '<div class="no-messages">Start your encrypted conversation! 🔐</div>';
       return;

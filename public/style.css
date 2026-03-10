@@ -256,7 +256,6 @@ body {
 
 .sidebar-search {
   padding: 10px 14px;
-  border-bottom: 1px solid #3a3b3c;
 }
 
 .sidebar-search input {
@@ -274,7 +273,43 @@ body {
   color: #8a8d91;
 }
 
-#user-list {
+/* =========== Sidebar Tabs =========== */
+.sidebar-tabs {
+  display: flex;
+  padding: 4px 10px;
+  gap: 4px;
+  border-bottom: 1px solid #3a3b3c;
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 9px;
+  border: none;
+  background: transparent;
+  color: #b0b3b8;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.sidebar-tab:hover {
+  background: #3a3b3c;
+}
+
+.sidebar-tab.active {
+  background: #0084ff;
+  color: #fff;
+}
+
+.sidebar-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+#user-list, #friends-list, #search-results {
   flex: 1;
   overflow-y: auto;
   padding: 6px 0;
@@ -606,4 +641,195 @@ body {
 
 #send-btn:hover {
   background: #006fd6;
+}
+
+/* =========== Icon Button =========== */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #3a3b3c;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e4e6eb;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.icon-btn:hover {
+  background: #4e4f50;
+}
+
+/* =========== Friend Request Badge =========== */
+.fr-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #f44336;
+  color: #fff;
+  border-radius: 50%;
+  min-width: 18px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+
+/* =========== Friend Requests Panel =========== */
+#friend-requests-panel {
+  position: absolute;
+  top: 56px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #242526;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.fr-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #3a3b3c;
+}
+
+.fr-panel-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e4e6eb;
+}
+
+.fr-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #303133;
+}
+
+.fr-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.fr-item-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #e4e6eb;
+}
+
+.fr-item-time {
+  font-size: 12px;
+  color: #8a8d91;
+}
+
+.fr-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* =========== Small Buttons =========== */
+.btn-small {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-accept {
+  background: #0084ff;
+  color: #fff;
+}
+
+.btn-accept:hover {
+  background: #006fd6;
+}
+
+.btn-reject {
+  background: #3a3b3c;
+  color: #e4e6eb;
+}
+
+.btn-reject:hover {
+  background: #4e4f50;
+}
+
+.btn-add-friend {
+  background: #0084ff;
+  color: #fff;
+}
+
+.btn-add-friend:hover {
+  background: #006fd6;
+}
+
+.btn-sent {
+  background: #3a3b3c;
+  color: #ff9800;
+  cursor: default;
+}
+
+.btn-accepted {
+  background: #3a3b3c;
+  color: #4caf50;
+  cursor: default;
+}
+
+/* =========== Avatar Wrapper with Status Dot =========== */
+.avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.status-dot {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #242526;
+}
+
+.status-dot.online {
+  background: #44b700;
+}
+
+.status-dot.offline {
+  background: #8a8d91;
+}
+
+/* =========== Avatar Small =========== */
+.avatar-sm {
+  width: 36px;
+  height: 36px;
+  font-size: 13px;
+}
+
+/* =========== Search Result Item =========== */
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* =========== Make sidebar relative for panel overlay =========== */
+#sidebar {
+  position: relative;
 }

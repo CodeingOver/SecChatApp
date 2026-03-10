@@ -88,6 +88,129 @@ io.use(async (socket, next) => {
   }
 });
 
+// =========== REST API: Search & Friends ===========
+
+// GET /api/search?q=keyword  (search registered users)
+app.get('/api/search', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const q = (req.query.q || '').trim();
+  if (q.length < 1) return res.json([]);
+  const users = await db.searchUsers(q, session.Username);
+  // Attach friendship status for each result
+  const results = [];
+  for (const u of users) {
+    const status = await db.getFriendshipStatus(session.Username, u.Username);
+    results.push({ username: u.Username, friendshipStatus: status });
+  }
+  res.json(results);
+});
+
+// GET /api/friends
+app.get('/api/friends', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const friends = await db.getFriends(session.Username);
+  // For each friend, check if online
+  const result = friends.map((f) => {
+    const onlineEntry = [...connectedUsers.entries()].find(([, v]) => v.username === f.FriendUsername);
+    return {
+      username: f.FriendUsername,
+      online: !!onlineEntry,
+      socketId: onlineEntry ? onlineEntry[0] : null,
+      publicKey: onlineEntry ? onlineEntry[1].publicKey : null,
+    };
+  });
+  res.json(result);
+});
+
+// GET /api/user-status/:username  (get any user's online status for direct chat)
+app.get('/api/user-status/:username', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const target = req.params.username;
+  const user = await db.getUserByUsername(target);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const onlineEntry = [...connectedUsers.entries()].find(([, v]) => v.username === target);
+  res.json({
+    username: target,
+    online: !!onlineEntry,
+    socketId: onlineEntry ? onlineEntry[0] : null,
+    publicKey: onlineEntry ? onlineEntry[1].publicKey : null,
+  });
+});
+
+// POST /api/friend-request  { toUsername }
+app.post('/api/friend-request', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const { toUsername } = req.body;
+  if (!toUsername) return res.status(400).json({ error: 'toUsername required' });
+  if (toUsername === session.Username) return res.status(400).json({ error: 'Cannot add yourself' });
+  const targetUser = await db.getUserByUsername(toUsername);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+  const result = await db.sendFriendRequest(session.Username, toUsername);
+  if (result.error) return res.status(409).json(result);
+
+  // Notify the target user via socket if online
+  const targetSocket = [...connectedUsers.entries()].find(([, v]) => v.username === toUsername);
+  if (targetSocket) {
+    io.to(targetSocket[0]).emit('friend-request-received', { from: session.Username });
+  }
+  // If auto-accepted, notify both
+  if (result.status === 'accepted') {
+    if (targetSocket) {
+      io.to(targetSocket[0]).emit('friend-accepted', { friend: session.Username });
+    }
+  }
+  res.json(result);
+});
+
+// GET /api/friend-requests  (pending incoming requests)
+app.get('/api/friend-requests', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const requests = await db.getPendingRequests(session.Username);
+  res.json(requests);
+});
+
+// POST /api/friend-request/:id/accept
+app.post('/api/friend-request/:id/accept', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const result = await db.acceptFriendRequest(parseInt(req.params.id), session.Username);
+  if (result.error) return res.status(400).json(result);
+
+  // Notify the sender via socket if online
+  const senderSocket = [...connectedUsers.entries()].find(([, v]) => v.username === result.friend);
+  if (senderSocket) {
+    io.to(senderSocket[0]).emit('friend-accepted', { friend: session.Username });
+  }
+  res.json(result);
+});
+
+// POST /api/friend-request/:id/reject
+app.post('/api/friend-request/:id/reject', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const result = await db.rejectFriendRequest(parseInt(req.params.id), session.Username);
+  res.json(result);
+});
+
 io.on('connection', (socket) => {
   console.log(`[Server] New connection: ${socket.id} (${socket.username})`);
 
@@ -95,7 +218,8 @@ io.on('connection', (socket) => {
   socket.on('register', ({ publicKey }) => {
     connectedUsers.set(socket.id, { username: socket.username, publicKey });
     console.log(`[Server] User online: ${socket.username} (${socket.id})`);
-    broadcastUserList();
+    // Notify friends that this user came online
+    notifyFriendsOnlineStatus(socket.username);
   });
 
   // Relay encrypted private message from sender to recipient
@@ -119,6 +243,7 @@ io.on('connection', (socket) => {
       fromUsername: senderName,
       encryptedMessage: data.encryptedMessage,
       signature: data.signature,
+      senderPublicKey: sender ? sender.publicKey : null,
     });
   });
 
@@ -126,11 +251,28 @@ io.on('connection', (socket) => {
     const user = connectedUsers.get(socket.id);
     if (user) {
       console.log(`[Server] User disconnected: ${user.username}`);
+      connectedUsers.delete(socket.id);
+      notifyFriendsOnlineStatus(user.username);
+    } else {
+      connectedUsers.delete(socket.id);
     }
-    connectedUsers.delete(socket.id);
-    broadcastUserList();
   });
 });
+
+// Notify all online friends that a user's status changed
+async function notifyFriendsOnlineStatus(username) {
+  try {
+    const friends = await db.getFriends(username);
+    for (const f of friends) {
+      const friendSocket = [...connectedUsers.entries()].find(([, v]) => v.username === f.FriendUsername);
+      if (friendSocket) {
+        io.to(friendSocket[0]).emit('friend-status-changed', { username });
+      }
+    }
+  } catch (err) {
+    console.error('[Server] Error notifying friends:', err.message);
+  }
+}
 
 function broadcastUserList() {
   const userList = [];

@@ -325,7 +325,6 @@
             privateKey: await CryptoModule.importSigningPrivateKey(keys.sigPriv),
           };
           keysLoaded = true;
-          console.log('Keys restored from server backup');
         }
       } catch (e) {
         console.warn('Failed to restore keys from server backup:', e);
@@ -357,7 +356,6 @@
             headers: apiHeaders(),
             body: JSON.stringify({ encryptedKeys: encrypted }),
           });
-          console.log('Keys backed up to server');
         } catch (e) {
           console.warn('Failed to backup keys to server:', e);
         }

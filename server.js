@@ -337,7 +337,7 @@ app.post('/api/update-public-key', async (req, res) => {
 });
 
 // POST /api/backup-keys  (save encrypted private keys to server for cross-browser sync)
-app.post('/api/backup-keys', async (req, res) => {
+app.post('/api/backup-keys', rateLimit(60000, 5), async (req, res) => {
   const token = req.headers.authorization;
   if (!token) return res.status(401).json({ error: 'Auth required' });
   const session = await db.getSessionByToken(token);
@@ -350,7 +350,7 @@ app.post('/api/backup-keys', async (req, res) => {
 });
 
 // GET /api/backup-keys  (retrieve encrypted private keys for cross-browser restore)
-app.get('/api/backup-keys', async (req, res) => {
+app.get('/api/backup-keys', rateLimit(60000, 10), async (req, res) => {
   const token = req.headers.authorization;
   if (!token) return res.status(401).json({ error: 'Auth required' });
   const session = await db.getSessionByToken(token);

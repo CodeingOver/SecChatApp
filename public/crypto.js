@@ -156,6 +156,57 @@ const CryptoModule = (() => {
     return await crypto.subtle.importKey('jwk', jwk, SIGN_ALGORITHM, true, ['verify']);
   }
 
+  // ============================================
+  // Password-based key encryption (AES-GCM + PBKDF2)
+  // Used for cross-browser key synchronization
+  // ============================================
+
+  // Derive AES-256-GCM key from password using PBKDF2
+  async function deriveKeyFromPassword(password, salt) {
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+    return await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  // Encrypt key material (JSON string) with password-derived AES-GCM key
+  // Returns JSON string: { salt, iv, ciphertext } all Base64
+  async function encryptKeysWithPassword(keysJsonString, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const aesKey = await deriveKeyFromPassword(password, salt);
+    const encoded = new TextEncoder().encode(keysJsonString);
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv }, aesKey, encoded
+    );
+    return JSON.stringify({
+      salt: arrayBufferToBase64(salt.buffer),
+      iv: arrayBufferToBase64(iv.buffer),
+      ciphertext: arrayBufferToBase64(ciphertext),
+    });
+  }
+
+  // Decrypt key material with password-derived AES-GCM key
+  // Input: JSON string { salt, iv, ciphertext }, returns JSON string of keys
+  async function decryptKeysWithPassword(encryptedString, password) {
+    const { salt, iv, ciphertext } = JSON.parse(encryptedString);
+    const saltBuf = new Uint8Array(base64ToArrayBuffer(salt));
+    const ivBuf = new Uint8Array(base64ToArrayBuffer(iv));
+    const ctBuf = base64ToArrayBuffer(ciphertext);
+    const aesKey = await deriveKeyFromPassword(password, saltBuf);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: ivBuf }, aesKey, ctBuf
+    );
+    return new TextDecoder().decode(decrypted);
+  }
+
   return {
     generateEncryptionKeyPair,
     generateSigningKeyPair,
@@ -171,5 +222,7 @@ const CryptoModule = (() => {
     decryptMessage,
     signMessage,
     verifySignature,
+    encryptKeysWithPassword,
+    decryptKeysWithPassword,
   };
 })();

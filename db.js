@@ -313,6 +313,29 @@ async function getFriendshipStatus(username1, username2) {
   return 'none';
 }
 
+// ============================================
+// Encrypted key backup (cross-browser sync)
+// ============================================
+
+async function saveEncryptedKeys(username, encryptedKeys) {
+  const db = await getPool();
+  await db
+    .request()
+    .input('username', sql.NVarChar(20), username)
+    .input('ek', sql.NVarChar(sql.MAX), encryptedKeys)
+    .query('UPDATE Users SET EncryptedKeys = @ek WHERE Username = @username');
+}
+
+async function getEncryptedKeys(username) {
+  const db = await getPool();
+  const result = await db
+    .request()
+    .input('username', sql.NVarChar(20), username)
+    .query('SELECT EncryptedKeys FROM Users WHERE Username = @username');
+  const row = result.recordset[0];
+  return row ? row.EncryptedKeys : null;
+}
+
 module.exports = {
   getPool,
   createUser,
@@ -333,5 +356,7 @@ module.exports = {
   rejectFriendRequest,
   getFriends,
   getFriendshipStatus,
+  saveEncryptedKeys,
+  getEncryptedKeys,
   sql,
 };

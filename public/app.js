@@ -218,7 +218,7 @@
         showError(loginErrorEl, data.error || 'Login failed. Please try again.');
         return;
       }
-      await startChat(data.token, data.username);
+      await startChat(data.token, data.username, password);
     } catch {
       showError(loginErrorEl, 'Connection error. Please try again.');
     } finally {
@@ -263,7 +263,7 @@
         showError(regErrorEl, data.error || 'Registration failed. Please try again.');
         return;
       }
-      await startChat(data.token, data.username);
+      await startChat(data.token, data.username, password);
     } catch {
       showError(regErrorEl, 'Connection error. Please try again.');
     } finally {
@@ -283,11 +283,11 @@
   }
 
   // =========== Start Chat session ===========
-  async function startChat(token, username) {
+  async function startChat(token, username, password) {
     authToken = token;
     myUsername = username;
 
-    // Try to load persisted RSA keys from localStorage, or generate new ones
+    // 1) Try to load persisted RSA keys from localStorage
     const storedKeys = localStorage.getItem('sca_keys_' + username);
     let keysLoaded = false;
     if (storedKeys) {
@@ -303,18 +303,43 @@
         };
         keysLoaded = true;
       } catch (e) {
-        console.warn('Failed to restore keys, generating new ones:', e);
+        console.warn('Failed to restore keys from localStorage:', e);
         localStorage.removeItem('sca_keys_' + username);
-        myEncryptionKeyPair = await CryptoModule.generateEncryptionKeyPair();
-        mySigningKeyPair = await CryptoModule.generateSigningKeyPair();
       }
-    } else {
+    }
+
+    // 2) If no localStorage keys and password available, try server backup
+    if (!keysLoaded && password) {
+      try {
+        const bkRes = await secureFetch('/api/backup-keys', { headers: apiHeaders() });
+        if (bkRes.ok) {
+          const bkData = await bkRes.json();
+          const decryptedJson = await CryptoModule.decryptKeysWithPassword(bkData.encryptedKeys, password);
+          const keys = JSON.parse(decryptedJson);
+          myEncryptionKeyPair = {
+            publicKey: await CryptoModule.importEncryptionPublicKeyJwk(keys.encPub),
+            privateKey: await CryptoModule.importEncryptionPrivateKey(keys.encPriv),
+          };
+          mySigningKeyPair = {
+            publicKey: await CryptoModule.importSigningPublicKeyJwk(keys.sigPub),
+            privateKey: await CryptoModule.importSigningPrivateKey(keys.sigPriv),
+          };
+          keysLoaded = true;
+          console.log('Keys restored from server backup');
+        }
+      } catch (e) {
+        console.warn('Failed to restore keys from server backup:', e);
+      }
+    }
+
+    // 3) If still no keys, generate new ones
+    if (!keysLoaded) {
       myEncryptionKeyPair = await CryptoModule.generateEncryptionKeyPair();
       mySigningKeyPair = await CryptoModule.generateSigningKeyPair();
     }
 
-    // Persist keys to localStorage whenever they were newly generated
-    if (!keysLoaded) {
+    // 4) Persist keys to localStorage whenever they were newly loaded or generated
+    if (!storedKeys || !keysLoaded) {
       const keysToStore = {
         encPub: await CryptoModule.exportPrivateKey(myEncryptionKeyPair.publicKey),
         encPriv: await CryptoModule.exportPrivateKey(myEncryptionKeyPair.privateKey),
@@ -322,6 +347,21 @@
         sigPriv: await CryptoModule.exportPrivateKey(mySigningKeyPair.privateKey),
       };
       localStorage.setItem('sca_keys_' + username, JSON.stringify(keysToStore));
+
+      // 5) Backup encrypted keys to server if password available
+      if (password) {
+        try {
+          const encrypted = await CryptoModule.encryptKeysWithPassword(JSON.stringify(keysToStore), password);
+          await secureFetch('/api/backup-keys', {
+            method: 'POST',
+            headers: apiHeaders(),
+            body: JSON.stringify({ encryptedKeys: encrypted }),
+          });
+          console.log('Keys backed up to server');
+        } catch (e) {
+          console.warn('Failed to backup keys to server:', e);
+        }
+      }
     }
 
     myEncryptionPublicKeyBase64 = await CryptoModule.exportPublicKey(myEncryptionKeyPair.publicKey);

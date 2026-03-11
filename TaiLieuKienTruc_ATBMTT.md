@@ -107,6 +107,7 @@ SecChatApp triển khai chiến lược **phòng thủ nhiều lớp**, không d
 │ Lớp 5: Bảo mật dữ liệu lưu trữ (Data-at-Rest) │
 │   - Tin nhắn được lưu dưới dạng mã hóa trong DB │
 │   - Key lưu trong localStorage (JWK format)     │
+│   - Encrypted Key Backup trên server (AES-GCM)  │
 │   - SQL Server kết nối qua Named Pipes (local)  │
 └─────────────────────────────────────────────────┘
 ```
@@ -454,13 +455,19 @@ function generateToken() {
 │ Server (SQL Server DB):                                 │
 │   Users.PublicKey = JSON {encryption, signing}           │
 │   (Chỉ lưu PUBLIC key, KHÔNG BAO GIỜ lưu private key)  │
+│                                                         │
+│ Server (Encrypted Backup):                              │
+│   Users.EncryptedKeys = AES-GCM encrypted JWK           │
+│   (Server KHÔNG THỂ giải mã — cần mật khẩu người dùng) │
 └──────────────────────────┬──────────────────────────────┘
                            │
 ┌─ Phục hồi ──────────────▼──────────────────────────────┐
 │ Khi F5 / reload / đăng nhập lại:                        │
 │   1. Đọc JWK từ localStorage                            │
-│   2. Import lại thành CryptoKey objects                  │
-│   3. Nếu thất bại → sinh key mới + lưu lại             │
+│   2. Nếu không có → tải bản backup từ server            │
+│      → Giải mã bằng AES-GCM (key từ mật khẩu + PBKDF2) │
+│   3. Import lại thành CryptoKey objects                  │
+│   4. Nếu thất bại → sinh key mới + lưu lại + backup    │
 └──────────────────────────┬──────────────────────────────┘
                            │
 ┌─ Hủy key ────────────────▼──────────────────────────────┐
@@ -472,7 +479,51 @@ function generateToken() {
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 2.6.2. EncryptedForSender – Mã hóa bản sao cho người gửi
+### 2.6.2. Đồng bộ khóa đa trình duyệt (Cross-Browser Key Sync)
+
+Vấn đề: `localStorage` là riêng biệt cho mỗi trình duyệt. Khi người dùng đăng nhập từ Firefox sau khi đã tạo khóa trên Chrome, họ sẽ không giải mã được các tin nhắn cũ.
+
+**Giải pháp: Encrypted Key Backup** – mã hóa RSA private keys bằng AES-GCM với khóa dẫn xuất từ mật khẩu (PBKDF2), lưu trên server.
+
+```
+┌─ Backup (khi sinh key mới) ─────────────────────────────┐
+│                                                          │
+│  Password ──PBKDF2──→ AES-256-GCM Key                   │
+│         (100,000 iterations, SHA-256, random salt)       │
+│                                                          │
+│  JWK Keys JSON ──AES-GCM Encrypt──→ Ciphertext          │
+│         (random 12-byte IV)                              │
+│                                                          │
+│  Gửi lên server: {salt, iv, ciphertext} (tất cả Base64) │
+│  Lưu vào: Users.EncryptedKeys                           │
+└──────────────────────────────────────────────────────────┘
+
+┌─ Restore (khi đăng nhập trình duyệt mới) ──────────────┐
+│                                                          │
+│  GET /api/backup-keys → {salt, iv, ciphertext}           │
+│                                                          │
+│  Password ──PBKDF2──→ AES-256-GCM Key (cùng salt)       │
+│  Ciphertext ──AES-GCM Decrypt──→ JWK Keys JSON          │
+│  Import JWK → CryptoKey objects → Lưu localStorage       │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Đảm bảo an toàn (Zero-Knowledge)**:
+
+- Server chỉ lưu **ciphertext** đã mã hóa AES-GCM
+- Khóa AES được dẫn xuất từ mật khẩu người dùng bằng **PBKDF2** (100,000 iterations)
+- Random **salt** (16 bytes) và **IV** (12 bytes) cho mỗi lần backup
+- Server **KHÔNG THỂ** giải mã private keys mà không biết mật khẩu
+- Nếu mật khẩu sai → AES-GCM decrypt sẽ thất bại (authentication tag kiểm tra)
+
+**Luồng ưu tiên trong `startChat()`**:
+
+1. Thử `localStorage` (nhanh nhất, không cần mật khẩu)
+2. Nếu không có → thử **server backup** (cần mật khẩu để giải mã)
+3. Nếu không có backup → **sinh key mới** + backup lên server
+4. Auto-login (F5 reload): chỉ dùng localStorage (không có mật khẩu)
+
+### 2.6.3. EncryptedForSender – Mã hóa bản sao cho người gửi
 
 Khi gửi tin nhắn, client mã hóa **2 bản**:
 
@@ -1396,35 +1447,37 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 
 # 📊 TỔNG KẾT: Bảng ánh xạ tính năng bảo mật
 
-| #   | Tính năng bảo mật                           | Chapter liên quan       | File triển khai                                         |
-| --- | ------------------------------------------- | ----------------------- | ------------------------------------------------------- |
-| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)   | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()`    |
-| 2   | Chữ ký số RSASSA-PKCS1-v1_5                 | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`      |
-| 3   | Hash mật khẩu scrypt + salt                 | Ch.2 Cryptography       | `server.js` → `hashPassword()`                          |
-| 4   | CSPRNG (randomBytes)                        | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation        |
-| 5   | SHA-256 (trong RSA-OAEP & RSASSA)           | Ch.2 Cryptography       | `crypto.js` → algorithm config                          |
-| 6   | Token-based session management              | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`     |
-| 7   | Socket.io middleware auth                   | Ch.3 Access Control     | `server.js` → `io.use()`                                |
-| 8   | `timingSafeEqual()` chống timing attack     | Ch.3 Access Control     | `server.js` → login flow                                |
-| 9   | Parameterized SQL queries                   | Ch.3, Ch.7              | `db.js` → mọi function                                  |
-| 10  | Input validation (length, required)         | Ch.7 Software Security  | `server.js` → mọi endpoint                              |
-| 11  | XSS prevention (`textContent`)              | Ch.4 Malicious Code     | `app.js` → rendering                                    |
-| 12  | Zero external crypto dependencies           | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                       |
-| 13  | Named Pipes (local DB only)                 | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                             |
-| 14  | EncryptedForSender (sender reads own msgs)  | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                          |
-| 15  | Key persistence (JWK in localStorage)       | Ch.2 Key Management     | `app.js` → `startChat()`                                |
-| 16  | Zero-knowledge server architecture          | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                                |
-| 17  | Privacy by Design                           | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                       |
-| 18  | JavaScript memory safety                    | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                      |
-| 19  | Chống truy cập DevTools (Source Protection) | Ch.7 Software Security  | `devtools-guard.js` → chặn F12, detect DevTools         |
-| 20  | Chặn truy cập trực tiếp file JS (403)       | Ch.7 Software Security  | `server.js` → middleware PROTECTED_SCRIPTS              |
-| 21  | Encrypted Script Loading (Blob URL)         | Ch.7 Software Security  | `server.js` → `/api/load-scripts`, `index.html` loader  |
-| 22  | API Traffic Encryption (XOR Cipher)         | Ch.7, Ch.2 Cryptography | `server.js` middleware + `app.js` → `secureFetch()`     |
-| 23  | HTTP Security Headers                       | Ch.4, Ch.7              | `server.js` → X-Frame-Options, nosniff, Referrer-Policy |
-| 24  | Rate Limiting (brute-force protection)      | Ch.5 DoS, Ch.3 Access   | `server.js` → `rateLimit()` on login/register           |
-| 25  | Server-side HTML Sanitization               | Ch.4 XSS, Ch.7          | `server.js` → `sanitizeHtml()` escape `<>"'&`           |
-| 26  | Username format whitelist                   | Ch.4 XSS, Ch.7          | `server.js` + `app.js` → `/^[a-zA-Z0-9_]+$/`            |
-| 27  | Message size limit (50KB)                   | Ch.5 DoS                | `server.js` → `encryptedMessage.length > 51200`         |
+| #   | Tính năng bảo mật                           | Chapter liên quan       | File triển khai                                                        |
+| --- | ------------------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| 1   | Mã hóa RSA-OAEP 2048-bit (E2E Encryption)   | Ch.2 Cryptography       | `crypto.js` → `encryptMessage()`, `decryptMessage()`                   |
+| 2   | Chữ ký số RSASSA-PKCS1-v1_5                 | Ch.2 Cryptography       | `crypto.js` → `signMessage()`, `verifySignature()`                     |
+| 3   | Hash mật khẩu scrypt + salt                 | Ch.2 Cryptography       | `server.js` → `hashPassword()`                                         |
+| 4   | CSPRNG (randomBytes)                        | Ch.2 Cryptography       | `server.js` → `generateToken()`, salt generation                       |
+| 5   | SHA-256 (trong RSA-OAEP & RSASSA)           | Ch.2 Cryptography       | `crypto.js` → algorithm config                                         |
+| 6   | Token-based session management              | Ch.3 Access Control     | `server.js` → `apiHeaders()`, `getSessionByToken()`                    |
+| 7   | Socket.io middleware auth                   | Ch.3 Access Control     | `server.js` → `io.use()`                                               |
+| 8   | `timingSafeEqual()` chống timing attack     | Ch.3 Access Control     | `server.js` → login flow                                               |
+| 9   | Parameterized SQL queries                   | Ch.3, Ch.7              | `db.js` → mọi function                                                 |
+| 10  | Input validation (length, required)         | Ch.7 Software Security  | `server.js` → mọi endpoint                                             |
+| 11  | XSS prevention (`textContent`)              | Ch.4 Malicious Code     | `app.js` → rendering                                                   |
+| 12  | Zero external crypto dependencies           | Ch.4 Malicious Code     | `crypto.js` → Web Crypto API only                                      |
+| 13  | Named Pipes (local DB only)                 | Ch.5 DoS, Ch.8 Firewall | `db.js` → connection string                                            |
+| 14  | EncryptedForSender (sender reads own msgs)  | Ch.2 Cryptography       | `app.js`, `db.js`, `server.js`                                         |
+| 15  | Key persistence (JWK in localStorage)       | Ch.2 Key Management     | `app.js` → `startChat()`                                               |
+| 16  | Zero-knowledge server architecture          | Ch.1 InfoSec, Ch.9 SSL  | `server.js` → relay only                                               |
+| 17  | Privacy by Design                           | Ch.10 Legal & Ethics    | Toàn bộ kiến trúc                                                      |
+| 18  | JavaScript memory safety                    | Ch.6 Buffer Overflow    | Runtime: V8 Engine                                                     |
+| 19  | Chống truy cập DevTools (Source Protection) | Ch.7 Software Security  | `devtools-guard.js` → chặn F12, detect DevTools                        |
+| 20  | Chặn truy cập trực tiếp file JS (403)       | Ch.7 Software Security  | `server.js` → middleware PROTECTED_SCRIPTS                             |
+| 21  | Encrypted Script Loading (Blob URL)         | Ch.7 Software Security  | `server.js` → `/api/load-scripts`, `index.html` loader                 |
+| 22  | API Traffic Encryption (XOR Cipher)         | Ch.7, Ch.2 Cryptography | `server.js` middleware + `app.js` → `secureFetch()`                    |
+| 23  | HTTP Security Headers                       | Ch.4, Ch.7              | `server.js` → X-Frame-Options, nosniff, Referrer-Policy                |
+| 24  | Rate Limiting (brute-force protection)      | Ch.5 DoS, Ch.3 Access   | `server.js` → `rateLimit()` on login/register                          |
+| 25  | Server-side HTML Sanitization               | Ch.4 XSS, Ch.7          | `server.js` → `sanitizeHtml()` escape `<>"'&`                          |
+| 26  | Username format whitelist                   | Ch.4 XSS, Ch.7          | `server.js` + `app.js` → `/^[a-zA-Z0-9_]+$/`                           |
+| 27  | Message size limit (50KB)                   | Ch.5 DoS                | `server.js` → `encryptedMessage.length > 51200`                        |
+| 28  | Encrypted Key Backup (AES-GCM + PBKDF2)     | Ch.2 Key Management     | `crypto.js` → `encryptKeysWithPassword()`, `decryptKeysWithPassword()` |
+| 29  | Đồng bộ khóa đa trình duyệt (Cross-Browser) | Ch.2 Key Management     | `app.js` → `startChat()`, `server.js` → `/api/backup-keys`             |
 
 ---
 
@@ -1453,6 +1506,7 @@ CREATE TABLE Users (
     PasswordHash NVARCHAR(128) NOT NULL,         -- scrypt hash
     Salt         NVARCHAR(32) NOT NULL,           -- 128-bit random
     PublicKey    NVARCHAR(MAX),                   -- JSON {encryption, signing}
+    EncryptedKeys NVARCHAR(MAX),                  -- AES-GCM encrypted JWK (cross-browser backup)
     CreatedAt    DATETIME2 DEFAULT GETDATE()
 );
 

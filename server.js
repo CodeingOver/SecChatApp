@@ -336,6 +336,30 @@ app.post('/api/update-public-key', async (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// POST /api/backup-keys  (save encrypted private keys to server for cross-browser sync)
+app.post('/api/backup-keys', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const { encryptedKeys } = req.body;
+  if (!encryptedKeys || typeof encryptedKeys !== 'string') return res.status(400).json({ error: 'encryptedKeys required' });
+  if (encryptedKeys.length > 100000) return res.status(400).json({ error: 'Payload too large' });
+  await db.saveEncryptedKeys(session.Username, encryptedKeys);
+  res.json({ status: 'ok' });
+});
+
+// GET /api/backup-keys  (retrieve encrypted private keys for cross-browser restore)
+app.get('/api/backup-keys', async (req, res) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: 'Auth required' });
+  const session = await db.getSessionByToken(token);
+  if (!session) return res.status(401).json({ error: 'Invalid token' });
+  const encryptedKeys = await db.getEncryptedKeys(session.Username);
+  if (!encryptedKeys) return res.status(404).json({ error: 'No backup found' });
+  res.json({ encryptedKeys });
+});
+
 // GET /api/user-status/:username  (get any user's online status for direct chat)
 app.get('/api/user-status/:username', async (req, res) => {
   const token = req.headers.authorization;

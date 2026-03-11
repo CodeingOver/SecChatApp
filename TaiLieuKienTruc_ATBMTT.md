@@ -1478,6 +1478,7 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 | 27  | Message size limit (50KB)                   | Ch.5 DoS                | `server.js` → `encryptedMessage.length > 51200`                        |
 | 28  | Encrypted Key Backup (AES-GCM + PBKDF2)     | Ch.2 Key Management     | `crypto.js` → `encryptKeysWithPassword()`, `decryptKeysWithPassword()` |
 | 29  | Đồng bộ khóa đa trình duyệt (Cross-Browser) | Ch.2 Key Management     | `app.js` → `startChat()`, `server.js` → `/api/backup-keys`             |
+| 30  | Auto Schema Migration (startup migration)   | Ch.7 Software Security  | `server.js` → `db.getPool().then(async pool => ALTER TABLE ...)`       |
 
 ---
 
@@ -1485,15 +1486,20 @@ Dù nội dung tin nhắn được mã hóa, **metadata** vẫn tồn tại:
 
 ```
 SecChatApp/
-├── server.js          # Express + Socket.io server, REST API, auth, source protection
-├── db.js              # SQL Server connection (Named Pipes), CRUD operations
+├── server.js          # Express + Socket.io server, REST API, auth, source protection, auto-migration
+├── db.js              # SQL Server connection (Named Pipes), CRUD + key backup operations
+├── database.sql       # SQL setup script (tạo DB + tables từ đầu, chạy 1 lần trong SSMS)
 ├── package.json       # Dependencies: express, socket.io, mssql, msnodesqlv8
 ├── public/
 │   ├── index.html         # UI + inline script loader (Blob URL bootstrap)
-│   ├── app.js             # Main app logic, secureFetch(), E2E encryption flow
-│   ├── crypto.js          # Cryptographic module (Web Crypto API)
+│   ├── app.js             # Main app logic, secureFetch(), E2E encryption, key backup/restore
+│   ├── crypto.js          # Cryptographic module (Web Crypto API + AES-GCM key backup)
 │   ├── devtools-guard.js  # Bảo vệ mã nguồn – chống mở DevTools
 │   └── style.css          # Messenger-like dark theme UI
+└── test/
+    ├── test.js            # Socket.io server unit tests
+    ├── test-protection.js # Security layer tests (headers, rate limit, JS access)
+    └── test-key-backup.js # Cross-browser key sync integration tests (Playwright)
 ```
 
 # 🗄️ DATABASE SCHEMA (SQL Server)

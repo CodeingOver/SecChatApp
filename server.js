@@ -567,7 +567,15 @@ const PORT = process.env.PORT || 3000;
 
 // Connect to database before starting server
 db.getPool()
-  .then(() => {
+  .then(async (pool) => {
+    // Auto-migrate: add missing columns if they don't exist yet
+    await pool.request().query(
+      "IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('Users') AND name = 'EncryptedKeys') ALTER TABLE Users ADD EncryptedKeys NVARCHAR(MAX) NULL"
+    );
+    await pool.request().query(
+      "IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('Messages') AND name = 'EncryptedForSender') ALTER TABLE Messages ADD EncryptedForSender NVARCHAR(MAX) NULL"
+    );
+    console.log('[DB] Schema migration complete');
     server.listen(PORT, () => {
       console.log(`[Server] SecChatApp running on http://localhost:${PORT}`);
     });

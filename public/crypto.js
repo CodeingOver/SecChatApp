@@ -1,6 +1,6 @@
 /* ============================================
-   SecChatApp – Cryptographic Module
-   Uses Web Crypto API (browser-native, no external libs)
+  SecChatApp – Module Ma hoa
+  Su dung Web Crypto API (native tren trinh duyet, khong thu vien ngoai)
    ============================================ */
 
 const CryptoModule = (() => {
@@ -18,16 +18,16 @@ const CryptoModule = (() => {
     hash: 'SHA-256',
   };
 
-  // Generate RSA-OAEP key pair for encryption/decryption
+  // Tao cap khoa RSA-OAEP dung de ma hoa/giai ma
   async function generateEncryptionKeyPair() {
     return await crypto.subtle.generateKey(
       RSA_ALGORITHM,
-      true, // extractable
+      true, // cho phep export
       ['encrypt', 'decrypt']
     );
   }
 
-  // Generate RSASSA-PKCS1-v1_5 key pair for signing/verification
+  // Tao cap khoa RSASSA-PKCS1-v1_5 dung de ky/xac minh
   async function generateSigningKeyPair() {
     return await crypto.subtle.generateKey(
       SIGN_ALGORITHM,
@@ -36,13 +36,13 @@ const CryptoModule = (() => {
     );
   }
 
-  // Export public key to Base64 (for sharing via server)
+  // Export public key sang Base64 (de chia se qua server)
   async function exportPublicKey(key) {
     const exported = await crypto.subtle.exportKey('spki', key);
     return arrayBufferToBase64(exported);
   }
 
-  // Import a public encryption key from Base64
+  // Import public key ma hoa tu Base64
   async function importEncryptionPublicKey(base64Key) {
     const binaryKey = base64ToArrayBuffer(base64Key);
     return await crypto.subtle.importKey(
@@ -54,7 +54,7 @@ const CryptoModule = (() => {
     );
   }
 
-  // Import a public signing key from Base64 (for verification)
+  // Import public key ky tu Base64 (de xac minh)
   async function importVerificationPublicKey(base64Key) {
     const binaryKey = base64ToArrayBuffer(base64Key);
     return await crypto.subtle.importKey(
@@ -66,7 +66,7 @@ const CryptoModule = (() => {
     );
   }
 
-  // Encrypt a message with recipient's public key (RSA-OAEP)
+  // Ma hoa tin nhan bang public key cua nguoi nhan (RSA-OAEP)
   async function encryptMessage(publicKey, plaintext) {
     const encoded = new TextEncoder().encode(plaintext);
     const encrypted = await crypto.subtle.encrypt(
@@ -77,7 +77,7 @@ const CryptoModule = (() => {
     return arrayBufferToBase64(encrypted);
   }
 
-  // Decrypt a message with own private key (RSA-OAEP)
+  // Giai ma tin nhan bang private key cua minh (RSA-OAEP)
   async function decryptMessage(privateKey, ciphertextBase64) {
     const ciphertext = base64ToArrayBuffer(ciphertextBase64);
     const decrypted = await crypto.subtle.decrypt(
@@ -88,7 +88,7 @@ const CryptoModule = (() => {
     return new TextDecoder().decode(decrypted);
   }
 
-  // Sign a message: Hash with SHA-256, then sign with sender's private key
+  // Ky tin nhan: hash SHA-256, sau do ky bang private key cua nguoi gui
   async function signMessage(privateKey, plaintext) {
     const encoded = new TextEncoder().encode(plaintext);
     const signature = await crypto.subtle.sign(
@@ -99,7 +99,7 @@ const CryptoModule = (() => {
     return arrayBufferToBase64(signature);
   }
 
-  // Verify signature: hash the decrypted message and compare with signature
+  // Xac minh chu ky: hash noi dung roi doi chieu voi signature
   async function verifySignature(publicKey, plaintext, signatureBase64) {
     const encoded = new TextEncoder().encode(plaintext);
     const signature = base64ToArrayBuffer(signatureBase64);
@@ -111,7 +111,7 @@ const CryptoModule = (() => {
     );
   }
 
-  // Utility: ArrayBuffer to Base64
+  // Tien ich: ArrayBuffer sang Base64
   function arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
     let binary = '';
@@ -121,7 +121,7 @@ const CryptoModule = (() => {
     return btoa(binary);
   }
 
-  // Utility: Base64 to ArrayBuffer
+  // Tien ich: Base64 sang ArrayBuffer
   function base64ToArrayBuffer(base64) {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -131,37 +131,37 @@ const CryptoModule = (() => {
     return bytes.buffer;
   }
 
-  // Export private key to JWK (for localStorage persistence)
+  // Export private key sang JWK (de luu localStorage)
   async function exportPrivateKey(key) {
     return await crypto.subtle.exportKey('jwk', key);
   }
 
-  // Import private encryption key from JWK
+  // Import private key ma hoa tu JWK
   async function importEncryptionPrivateKey(jwk) {
     return await crypto.subtle.importKey('jwk', jwk, RSA_ALGORITHM, true, ['decrypt']);
   }
 
-  // Import public encryption key from JWK
+  // Import public key ma hoa tu JWK
   async function importEncryptionPublicKeyJwk(jwk) {
     return await crypto.subtle.importKey('jwk', jwk, RSA_ALGORITHM, true, ['encrypt']);
   }
 
-  // Import private signing key from JWK
+  // Import private key ky tu JWK
   async function importSigningPrivateKey(jwk) {
     return await crypto.subtle.importKey('jwk', jwk, SIGN_ALGORITHM, true, ['sign']);
   }
 
-  // Import public signing key from JWK
+  // Import public key ky tu JWK
   async function importSigningPublicKeyJwk(jwk) {
     return await crypto.subtle.importKey('jwk', jwk, SIGN_ALGORITHM, true, ['verify']);
   }
 
   // ============================================
-  // Password-based key encryption (AES-GCM + PBKDF2)
-  // Used for cross-browser key synchronization
+  // Ma hoa khoa dua tren mat khau (AES-GCM + PBKDF2)
+  // Dung de dong bo khoa giua nhieu trinh duyet
   // ============================================
 
-  // Derive AES-256-GCM key from password using PBKDF2
+  // Dan xuat khoa AES-256-GCM tu mat khau bang PBKDF2
   async function deriveKeyFromPassword(password, salt) {
     const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
@@ -176,8 +176,8 @@ const CryptoModule = (() => {
     );
   }
 
-  // Encrypt key material (JSON string) with password-derived AES-GCM key
-  // Returns JSON string: { salt, iv, ciphertext } all Base64
+  // Ma hoa du lieu khoa (chuoi JSON) bang khoa AES-GCM dan xuat tu mat khau
+  // Tra ve chuoi JSON: { salt, iv, ciphertext } deu o dang Base64
   async function encryptKeysWithPassword(keysJsonString, password) {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -193,8 +193,8 @@ const CryptoModule = (() => {
     });
   }
 
-  // Decrypt key material with password-derived AES-GCM key
-  // Input: JSON string { salt, iv, ciphertext }, returns JSON string of keys
+  // Giai ma du lieu khoa bang khoa AES-GCM dan xuat tu mat khau
+  // Dau vao: JSON { salt, iv, ciphertext }, dau ra: chuoi JSON chua khoa
   async function decryptKeysWithPassword(encryptedString, password) {
     const { salt, iv, ciphertext } = JSON.parse(encryptedString);
     const saltBuf = new Uint8Array(base64ToArrayBuffer(salt));

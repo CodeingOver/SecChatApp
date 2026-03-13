@@ -139,6 +139,13 @@ app.get('/api/load-scripts', (req, res) => {
 app.use('/api', (req, res, next) => {
   // Skip the load-scripts and cipher-key endpoints
   if (req.path === '/load-scripts' || req.path === '/cipher-key') return next();
+
+  // Local debug mode for tools like Thunder Client:
+  // send header `x-debug-plain: 1` to receive plaintext JSON.
+  const isLocalIp = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
+  const wantsPlain = req.headers['x-debug-plain'] === '1';
+  if (process.env.NODE_ENV !== 'production' && isLocalIp && wantsPlain) return next();
+
   const originalJson = res.json.bind(res);
   res.json = (data) => {
     const plain = JSON.stringify(data);

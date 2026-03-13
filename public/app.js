@@ -263,6 +263,8 @@
         showError(regErrorEl, data.error || 'Registration failed. Please try again.');
         return;
       }
+      showSuccess(regErrorEl, 'Registration successful! Signing you in...');
+      await new Promise((resolve) => setTimeout(resolve, 700));
       await startChat(data.token, data.username, password);
     } catch {
       showError(regErrorEl, 'Connection error. Please try again.');
@@ -273,6 +275,13 @@
   }
 
   function showError(el, msg) {
+    el.classList.remove('form-success');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function showSuccess(el, msg) {
+    el.classList.add('form-success');
     el.textContent = msg;
     el.classList.remove('hidden');
   }

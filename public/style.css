@@ -149,6 +149,11 @@ body {
   border-radius: 8px;
 }
 
+.form-error.form-success {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.15);
+}
+
 .btn-primary {
   width: 100%;
   padding: 14px;
